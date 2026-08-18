@@ -1,0 +1,27 @@
+{
+  "rules": {
+    ".read": true,
+    ".write": true,
+    "buyers": {
+      ".indexOn": ["name", "createdAt"]
+    },
+    "orders": {
+      ".indexOn": ["buyerId", "articleId", "status", "deliveryDate"]
+    },
+    "productionFlows": {
+      ".indexOn": ["orderId", "status"]
+    },
+    "warehouseStocks": {
+      ".indexOn": ["location", "sku", "item"]
+    },
+    "finishedGoods": {
+      ".indexOn": ["orderId", "status"]
+    },
+    "departments": {
+      ".indexOn": ["name"]
+    },
+    "materialReceivals": {
+      ".indexOn": ["date", "supplier"]
+    }
+  }
+}

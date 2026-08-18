@@ -1,0 +1,40 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Allow read/write access to all ERP collections for real-time synchronization
+    match /buyers/{document=**} {
+      allow read, write: if true;
+    }
+    match /orders/{document=**} {
+      allow read, write: if true;
+    }
+    match /productionFlows/{document=**} {
+      allow read, write: if true;
+    }
+    match /departments/{document=**} {
+      allow read, write: if true;
+    }
+    match /articles/{document=**} {
+      allow read, write: if true;
+    }
+    match /warehouseStocks/{document=**} {
+      allow read, write: if true;
+    }
+    match /finishedGoods/{document=**} {
+      allow read, write: if true;
+    }
+    match /materialReceivals/{document=**} {
+      allow read, write: if true;
+    }
+    match /users/{document=**} {
+      allow read, write: if true;
+    }
+
+    // Default fallback rule for any other collection
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}
