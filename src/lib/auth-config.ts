@@ -139,7 +139,7 @@ export const ERP_SECTIONS: SectionDefinition[] = [
     color: '#f97316', // Orange
     badgeBg: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
     description: 'Human Resource management panel. Create and manage user credentials for all ERP sections.',
-    allowedRoutes: ['/hr', '/notifications'],
+    allowedRoutes: ['*'],
     defaultPath: '/hr',
     defaultUsername: 'hr@factory.com',
     defaultRole: 'HR Manager',

@@ -58,7 +58,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // ── Login ──────────────────────────────────────────────────────────────────
-  const login = useCallback(async (credentials: LoginCredentials): Promise<{ success: boolean; error?: string }> => {
+  const login = useCallback(async (credentials: LoginCredentials): Promise<{ success: boolean; error?: string; defaultPath?: string }> => {
     try {
       const sectionConfig = getSectionById(credentials.sectionId);
       if (!sectionConfig) {
@@ -96,7 +96,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setUser(hrUser);
           localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(hrUser));
           window.dispatchEvent(new CustomEvent('erp:authChanged', { detail: hrUser }));
-          return { success: true };
+          return { success: true, defaultPath: hrSection.defaultPath };
         }
       }
 
@@ -137,7 +137,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setUser(newUser);
             localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(newUser));
             window.dispatchEvent(new CustomEvent('erp:authChanged', { detail: newUser }));
-            return { success: true };
+            return { success: true, defaultPath: targetSection.defaultPath };
           }
 
           // Check if the user credentials match a DIFFERENT section
@@ -177,6 +177,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!isUserValid || !isPassValid) {
           return { success: false, error: 'Incorrect username or password for Admin. (User: siam@erp | Pass: -test)' };
         }
+        const adminSection = getSectionById('admin') || sectionConfig;
+        const newUser: AuthUser = {
+          id: `usr_admin_${Date.now()}`,
+          username: rawUsername,
+          name: 'Siam',
+          section: 'admin',
+          role: adminSection.defaultRole,
+          email: rawUsername.includes('@') ? rawUsername : `${rawUsername}@factory.com`,
+          allowedRoutes: adminSection.allowedRoutes,
+          loginTime: new Date().toISOString(),
+        };
+        setUser(newUser);
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(newUser));
+        window.dispatchEvent(new CustomEvent('erp:authChanged', { detail: newUser }));
+        return { success: true, defaultPath: adminSection.defaultPath };
       }
 
       // ── HR Section direct access guard ─────────────────────────────────────
@@ -202,7 +217,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(newUser);
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(newUser));
       window.dispatchEvent(new CustomEvent('erp:authChanged', { detail: newUser }));
-      return { success: true };
+      return { success: true, defaultPath: sectionConfig.defaultPath };
     } catch (err: any) {
       return { success: false, error: err.message || 'Login failed. Please try again.' };
     }
@@ -264,6 +279,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // onSnapshot will auto-update hrUsers on all devices
   }, []);
 
+  const updateUserAvatar = useCallback((avatarDataUrl: string | null) => {
+    setUser((prev) => {
+      if (!prev) return prev;
+      const updated: AuthUser = { ...prev, avatar: avatarDataUrl || undefined };
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(updated));
+      window.dispatchEvent(new CustomEvent('erp:authChanged', { detail: updated }));
+      return updated;
+    });
+  }, []);
+
+  const updateUserProfile = useCallback((updates: Partial<AuthUser>) => {
+    setUser((prev) => {
+      if (!prev) return prev;
+      const updated: AuthUser = { ...prev, ...updates };
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(updated));
+      window.dispatchEvent(new CustomEvent('erp:authChanged', { detail: updated }));
+      return updated;
+    });
+  }, []);
+
   const activeSection = useMemo(
     () => (user ? getSectionById(user.section) || null : null),
     [user]
@@ -284,10 +319,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     updateHRUser,
     deleteHRUser,
     refreshHRUsers,
+    updateUserAvatar,
+    updateUserProfile,
   }), [
     user, isLoading, activeSection, hrUsers,
     login, logout, switchSection, canAccessRoute,
     addHRUser, updateHRUser, deleteHRUser, refreshHRUsers,
+    updateUserAvatar, updateUserProfile,
   ]);
 
   return (

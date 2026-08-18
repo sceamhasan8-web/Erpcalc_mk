@@ -351,7 +351,7 @@ export function ProductionPage() {
     });
 
     // Construct ISO Date string from selected entryDate and entryTime
-    let finalDate = new Date();
+    const finalDate = new Date();
     if (entryDate) {
       const dateParts = entryDate.split('-').map(Number);
       if (dateParts.length === 3) {
@@ -540,6 +540,34 @@ export function ProductionPage() {
     }
     return null;
   }, [historyStartDate, historyEndDate]);
+
+  // Aggregated Grand Total Statistics for date-wise filtered flows
+  const totalProductionStats = useMemo(() => {
+    let totalQty = 0;
+    const sizeMap: Record<string, number> = {};
+    const deptMap: Record<string, number> = {};
+
+    sortedAndFilteredFlows.forEach((f) => {
+      const qty = f.completed || 0;
+      totalQty += qty;
+      if (f.department) {
+        deptMap[f.department] = (deptMap[f.department] || 0) + qty;
+      }
+      if (f.sizeBreakdown) {
+        Object.entries(f.sizeBreakdown).forEach(([sz, sQty]) => {
+          sizeMap[sz] = (sizeMap[sz] || 0) + (Number(sQty) || 0);
+        });
+      }
+    });
+
+    return {
+      totalQty,
+      totalEntries: sortedAndFilteredFlows.length,
+      sizeBreakdown: sizeMap,
+      deptBreakdown: deptMap,
+      hasSizes: Object.keys(sizeMap).length > 0,
+    };
+  }, [sortedAndFilteredFlows]);
 
   // Helper date formatter
   function formatDateTime(isoString?: string) {
@@ -912,6 +940,49 @@ export function ProductionPage() {
                         </div>
                       );
                     })}
+                    {/* Mobile Grand Total Summary Box */}
+                    <div className="p-4 rounded-2xl border-2 border-cyan-500/30 bg-gradient-to-br from-cyan-500/10 via-[var(--ec-surface)] to-emerald-500/10 shadow-md space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Layers className="h-4 w-4 text-cyan-400" />
+                          <span className="font-black text-xs uppercase tracking-wider text-[var(--ec-foreground)]">
+                            Grand Total Production
+                          </span>
+                        </div>
+                        <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/25">
+                          {totalProductionStats.totalEntries} {totalProductionStats.totalEntries === 1 ? 'Entry' : 'Entries'}
+                        </span>
+                      </div>
+
+                      {/* Total Output Highlight */}
+                      <div className="flex items-center justify-between p-3 rounded-xl bg-[var(--ec-card)] border border-emerald-500/25 shadow-inner">
+                        <span className="text-xs font-bold text-[var(--ec-muted)]">Total Output Completed:</span>
+                        <span className="inline-flex items-center gap-1 font-black text-base text-emerald-400">
+                          +{totalProductionStats.totalQty.toLocaleString()}
+                          <span className="text-xs text-emerald-300 font-bold">{defaultProductionUnit}</span>
+                        </span>
+                      </div>
+
+                      {/* Size Breakdown in Mobile if mode is 'size' */}
+                      {productionViewMode === 'size' && totalProductionStats.hasSizes && (
+                        <div className="pt-2 border-t border-[var(--ec-border)]/60 space-y-1.5">
+                          <div className="text-[10px] font-bold text-cyan-400 uppercase tracking-wider">
+                            Aggregated Size Breakdown:
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {Object.entries(totalProductionStats.sizeBreakdown).map(([sz, qty]) => (
+                              <span
+                                key={sz}
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-bold bg-cyan-500/15 border border-cyan-500/30 text-cyan-300"
+                              >
+                                <span className="text-[var(--ec-muted)]">{sz}#:</span>
+                                <strong className="text-cyan-400 font-black">{qty.toLocaleString()}</strong>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   {/* DESKTOP VIEW: Full Data Table (Shown on screens >= 768px) */}
@@ -1043,7 +1114,126 @@ export function ProductionPage() {
                           );
                         })}
                       </tbody>
+
+                      {/* GRAND TOTAL TABLE FOOTER */}
+                      <tfoot>
+                        <tr className="border-t-2 border-cyan-500/40 bg-gradient-to-r from-cyan-500/10 via-[var(--ec-surface)] to-emerald-500/10 font-bold text-xs">
+                          {/* Date & Time col */}
+                          <td className="py-3.5 px-3 whitespace-nowrap">
+                            <div className="flex items-center gap-2 text-cyan-400">
+                              <Layers className="h-4 w-4 flex-shrink-0" />
+                              <div className="flex flex-col">
+                                <span className="font-black uppercase tracking-wider text-xs text-[var(--ec-foreground)]">
+                                  GRAND TOTAL
+                                </span>
+                                <span className="text-[10px] text-cyan-400 font-semibold">
+                                  All Filtered Records
+                                </span>
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* Order Number col */}
+                          <td className="py-3.5 px-3 whitespace-nowrap">
+                            <span className="inline-flex items-center gap-1 font-bold text-xs px-2.5 py-1 rounded-md bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                              {totalProductionStats.totalEntries} {totalProductionStats.totalEntries === 1 ? 'Entry' : 'Entries'}
+                            </span>
+                          </td>
+
+                          {/* Article & Color col */}
+                          <td className="py-3.5 px-3 text-[11px] text-[var(--ec-muted)]">
+                            <span className="font-semibold text-[var(--ec-foreground)]">All Orders Combined</span>
+                          </td>
+
+                          {/* Department col */}
+                          <td className="py-3.5 px-3 whitespace-nowrap">
+                            <span className="text-[11px] font-bold text-[var(--ec-muted)]">
+                              {Object.keys(totalProductionStats.deptBreakdown).length} Departments
+                            </span>
+                          </td>
+
+                          {/* Total Output Entry / Size Breakdown col */}
+                          <td className="py-3.5 px-3">
+                            {productionViewMode === 'size' ? (
+                              totalProductionStats.hasSizes ? (
+                                <div className="space-y-1.5 py-1">
+                                  <div className="flex flex-wrap items-center gap-1.5 max-w-[340px]">
+                                    {Object.entries(totalProductionStats.sizeBreakdown).map(([sz, qty]) => (
+                                      <span
+                                        key={sz}
+                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-cyan-500/15 border border-cyan-500/30 text-[11px]"
+                                      >
+                                        <span className="text-[var(--ec-muted)] font-bold">{sz}#:</span>
+                                        <strong className="text-cyan-400 font-extrabold">{qty.toLocaleString()}</strong>
+                                      </span>
+                                    ))}
+                                  </div>
+                                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-emerald-500/15 border border-emerald-500/30 shadow-sm">
+                                    <span className="text-[10px] text-emerald-300 font-extrabold uppercase tracking-wider">
+                                      Total Sum:
+                                    </span>
+                                    <span className="font-black text-sm text-emerald-400">
+                                      +{totalProductionStats.totalQty.toLocaleString()} {defaultProductionUnit}
+                                    </span>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 shadow-sm">
+                                  <span className="text-[10px] text-emerald-300 font-extrabold uppercase tracking-wider">
+                                    Total Output:
+                                  </span>
+                                  <span className="font-black text-base text-emerald-400">
+                                    +{totalProductionStats.totalQty.toLocaleString()} {defaultProductionUnit}
+                                  </span>
+                                </div>
+                              )
+                            ) : (
+                              <div className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 shadow-sm">
+                                <span className="font-black text-base sm:text-lg text-emerald-400">
+                                  +{totalProductionStats.totalQty.toLocaleString()}
+                                </span>
+                                <span className="text-xs text-emerald-300 font-extrabold uppercase">
+                                  {defaultProductionUnit}
+                                </span>
+                              </div>
+                            )}
+                          </td>
+
+                          {/* Notes col */}
+                          <td className="py-3.5 px-3 text-[11px] text-[var(--ec-muted)]">
+                            Summary Row
+                          </td>
+
+                          {/* Action col */}
+                          <td className="py-3.5 px-3 text-center whitespace-nowrap sticky right-0 bg-[var(--ec-surface)] shadow-[-4px_0_6px_rgba(0,0,0,0.1)] z-10 text-[var(--ec-muted)] font-bold">
+                            —
+                          </td>
+                        </tr>
+                      </tfoot>
                     </table>
+                  </div>
+
+                  {/* Summary Metric Footer Card */}
+                  <div className="mt-3.5 p-3.5 sm:p-4 rounded-xl border border-cyan-500/20 bg-gradient-to-r from-cyan-500/5 via-[var(--ec-surface)] to-emerald-500/5 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+                    <div className="flex items-center gap-2">
+                      <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                        <CheckCircle2 className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <div className="font-bold text-[var(--ec-foreground)]">
+                          Total Output Recorded: <span className="text-emerald-400 font-black text-sm">+{totalProductionStats.totalQty.toLocaleString()} {defaultProductionUnit}</span>
+                        </div>
+                        <div className="text-[11px] text-[var(--ec-muted)]">
+                          Showing aggregate from {totalProductionStats.totalEntries} entries across {Object.keys(totalProductionStats.deptBreakdown).length} departments
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 self-stretch sm:self-auto justify-end">
+                      <span className="text-[11px] font-bold text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 px-3 py-1.5 rounded-lg">
+                        {dateRangeLabel || 'All Recorded Dates'}
+                      </span>
+                    </div>
                   </div>
                 </>
               )}

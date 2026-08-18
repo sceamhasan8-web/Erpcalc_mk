@@ -58,10 +58,12 @@ export function Sidebar({
   open,
   onClose,
   onOpenCustomizer,
+  onOpenProfile,
 }: {
   open?: boolean;
   onClose?: () => void;
   onOpenCustomizer?: () => void;
+  onOpenProfile?: () => void;
 }) {
   const pathname = usePathname();
   const { user, activeSection, canAccessRoute, logout } = useAuth();
@@ -109,8 +111,8 @@ export function Sidebar({
     // All other items: respect saved enabled state
     if (!item.enabled) return false;
 
-    // Super admin sees all non-HR items
-    if (isSuperAdmin) return true;
+    // Super admin and HR see all non-HR items
+    if (isSuperAdmin || isHRSection) return true;
 
     // Other sections: only allowed routes
     return canAccessRoute(item.href);
@@ -118,12 +120,12 @@ export function Sidebar({
 
   return (
     <aside
-      className={`sidebar fixed left-0 top-0 z-40 flex h-full w-64 transform flex-col gap-3 border-r border-[var(--ec-border)] bg-[var(--ec-card)] p-4 transition-transform duration-200 lg:static lg:translate-x-0 ${
+      className={`sidebar fixed inset-y-0 left-0 z-50 flex h-full max-h-[100dvh] w-72 max-w-[85vw] transform flex-col gap-3 border-r border-[var(--ec-border)] bg-[var(--ec-card)] p-4 shadow-2xl transition-transform duration-300 ease-out lg:static lg:h-full lg:max-h-none lg:w-64 lg:shadow-none lg:translate-x-0 ${
         open ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
       }`}
     >
       {/* Brand Header */}
-      <div className="mb-2 flex items-center gap-3">
+      <div className="mb-1 flex items-center gap-3 flex-shrink-0">
         <img src="/erpcalc-logo.png" alt="ERP Calc" className="brand-logo rounded-xl shadow-sm" />
         <div className="flex-1 min-w-0">
           <div className="text-sm font-bold text-[var(--ec-foreground)] truncate">EasyCalc ERP</div>
@@ -131,7 +133,7 @@ export function Sidebar({
         </div>
         <button
           onClick={onClose}
-          className="lg:hidden rounded-lg border border-[var(--ec-border)] bg-[var(--ec-surface)] px-2.5 py-1 text-xs text-[var(--ec-foreground)]"
+          className="lg:hidden rounded-lg border border-[var(--ec-border)] bg-[var(--ec-surface)] px-2.5 py-1 text-xs font-semibold text-[var(--ec-foreground)] hover:bg-[var(--ec-border)] active:scale-95 transition"
         >
           Close
         </button>
@@ -140,7 +142,7 @@ export function Sidebar({
       {/* Active Section Info Card */}
       {activeSection && (
         <div
-          className="rounded-xl border p-2.5 flex items-center gap-2.5 transition"
+          className="rounded-xl border p-2.5 flex items-center gap-2.5 transition flex-shrink-0"
           style={{
             backgroundColor: `${activeSection.color}10`,
             borderColor: `${activeSection.color}35`,
@@ -162,9 +164,9 @@ export function Sidebar({
       )}
 
       {/* Navigation List */}
-      <nav className="flex flex-1 flex-col gap-1 overflow-y-auto pr-1">
+      <nav className="flex flex-1 flex-col gap-1 overflow-y-auto pr-1 overscroll-contain">
         <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--ec-muted)] px-3 pt-2 pb-1">
-          {isSuperAdmin ? 'All Modules' : `${activeSection?.shortName || 'Section'} Modules`}
+          {isSuperAdmin || isHRSection ? 'All Modules' : `${activeSection?.shortName || 'Section'} Modules`}
         </div>
 
         {visibleMenuItems.map((item) => {
@@ -199,8 +201,8 @@ export function Sidebar({
       </nav>
 
       {/* Footer Controls & User Card */}
-      <div className="pt-2 border-t border-[var(--ec-border)] flex flex-col gap-2">
-        {isSuperAdmin && (
+      <div className="pt-2 border-t border-[var(--ec-border)] flex flex-col gap-2 flex-shrink-0">
+        {(isSuperAdmin || isHRSection) && (
           <button
             type="button"
             onClick={onOpenCustomizer}
@@ -211,16 +213,34 @@ export function Sidebar({
           </button>
         )}
 
-        <div className="flex items-center justify-between p-2 rounded-xl bg-[var(--ec-surface)] border border-[var(--ec-border)]">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="h-7 w-7 rounded-lg bg-gradient-to-tr from-blue-600 to-cyan-500 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
-              {user?.name?.charAt(0) || 'U'}
-            </div>
+        <div className="flex items-center justify-between p-2 rounded-xl bg-[var(--ec-surface)] border border-[var(--ec-border)] hover:border-cyan-500/30 transition">
+          <button
+            type="button"
+            onClick={() => {
+              if (onClose) onClose();
+              onOpenProfile?.();
+            }}
+            title="View User Profile"
+            className="flex items-center gap-2.5 min-w-0 flex-1 text-left group hover:opacity-90 transition"
+          >
+            {user?.avatar ? (
+              <img
+                src={user.avatar}
+                alt={user.name}
+                className="h-7 w-7 rounded-lg object-cover flex-shrink-0 group-hover:scale-105 transition-transform shadow-sm border border-[var(--ec-border)]"
+              />
+            ) : (
+              <div className="h-7 w-7 rounded-lg bg-gradient-to-tr from-blue-600 to-cyan-500 flex items-center justify-center text-white text-xs font-bold flex-shrink-0 group-hover:scale-105 transition-transform shadow-sm">
+                {user?.name?.charAt(0) || 'U'}
+              </div>
+            )}
             <div className="min-w-0 flex-1">
-              <div className="text-xs font-semibold text-[var(--ec-foreground)] truncate">{user?.name}</div>
+              <div className="text-xs font-semibold text-[var(--ec-foreground)] truncate group-hover:text-cyan-400 transition-colors">
+                {user?.name}
+              </div>
               <div className="text-[10px] text-[var(--ec-muted)] truncate">{user?.role}</div>
             </div>
-          </div>
+          </button>
 
           <button
             type="button"

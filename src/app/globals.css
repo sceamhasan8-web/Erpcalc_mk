@@ -131,13 +131,20 @@ body {
   display: flex;
   justify-content: space-around;
   align-items: center;
-  padding: 8px 8px calc(8px + env(safe-area-inset-bottom, 4px));
+  height: 64px;
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
   background: rgba(255, 255, 255, 0.92);
   border-top: 1px solid var(--ec-border);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  z-index: 40;
-  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.05);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  z-index: 30;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.06);
+}
+
+.dark-theme .mobile-nav {
+  background: rgba(10, 20, 45, 0.94);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.35);
 }
 
 input,
@@ -230,5 +237,37 @@ textarea:focus {
 .animate-slide-in-right {
   animation: slideInRight 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(15, 23, 42, 0.06) 25%,
+    rgba(15, 23, 42, 0.12) 37%,
+    rgba(15, 23, 42, 0.06) 63%
+  );
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+}
+
+.dark-theme .skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04) 25%,
+    rgba(255, 255, 255, 0.1) 37%,
+    rgba(255, 255, 255, 0.04) 63%
+  );
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+}
+
 
 

@@ -10,10 +10,12 @@ import { useTheme } from './ThemeProvider';
 import { useAuth } from '@/context/AuthContext';
 import LoginPage from './LoginPage';
 import AccessDenied from './AccessDenied';
+import UserProfileModal from './UserProfileModal';
 
 export default function Shell({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [customizerOpen, setCustomizerOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const { dark, toggleDark } = useTheme();
   const { isAuthenticated, isLoading, canAccessRoute, user } = useAuth();
   const pathname = usePathname();
@@ -41,13 +43,28 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   if (isHRRoute && !isHRSection) {
     return (
       <div className="flex min-h-screen bg-[var(--ec-bg)] text-foreground">
-        <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} onOpenCustomizer={() => setCustomizerOpen(true)} />
+        <Sidebar
+          open={sidebarOpen}
+          onClose={() => setSidebarOpen(false)}
+          onOpenCustomizer={() => setCustomizerOpen(true)}
+          onOpenProfile={() => setProfileOpen(true)}
+        />
         <div className="flex flex-1 flex-col min-w-0">
-          <Topbar onOpenMenu={() => setSidebarOpen(true)} dark={dark} onToggleDark={toggleDark} />
-          <main className="flex-1 pb-24 lg:pb-8">
+          <Topbar
+            onOpenMenu={() => setSidebarOpen(true)}
+            dark={dark}
+            onToggleDark={toggleDark}
+            onOpenProfile={() => setProfileOpen(true)}
+          />
+          <main className="flex-1 pb-28 sm:pb-32 lg:pb-8">
             <AccessDenied />
           </main>
         </div>
+        <UserProfileModal
+          isOpen={profileOpen}
+          onClose={() => setProfileOpen(false)}
+          onOpenCustomizer={() => setCustomizerOpen(true)}
+        />
       </div>
     );
   }
@@ -57,23 +74,44 @@ export default function Shell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-screen bg-[var(--ec-bg)] text-foreground">
-      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} onOpenCustomizer={() => setCustomizerOpen(true)} />
+      <Sidebar
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        onOpenCustomizer={() => setCustomizerOpen(true)}
+        onOpenProfile={() => setProfileOpen(true)}
+      />
 
       <div className="flex flex-1 flex-col min-w-0">
-        <Topbar onOpenMenu={() => setSidebarOpen(true)} dark={dark} onToggleDark={toggleDark} />
-        <main className="flex-1 pb-24 lg:pb-8">
+        <Topbar
+          onOpenMenu={() => setSidebarOpen(true)}
+          dark={dark}
+          onToggleDark={toggleDark}
+          onOpenProfile={() => setProfileOpen(true)}
+        />
+        <main className="flex-1 pb-28 sm:pb-32 lg:pb-8">
           {isAllowed ? children : <AccessDenied />}
         </main>
         <div className="lg:hidden">
-          <BottomNav onOpenCustomizer={() => setCustomizerOpen(true)} />
+          <BottomNav
+            onOpenCustomizer={() => setCustomizerOpen(true)}
+            onOpenProfile={() => setProfileOpen(true)}
+          />
         </div>
       </div>
 
       <MenuCustomizer open={customizerOpen} onClose={() => setCustomizerOpen(false)} />
+      <UserProfileModal
+        isOpen={profileOpen}
+        onClose={() => setProfileOpen(false)}
+        onOpenCustomizer={() => setCustomizerOpen(true)}
+      />
 
-      {/* Mobile overlay */}
+      {/* Mobile backdrop overlay */}
       {sidebarOpen && (
-        <div onClick={() => setSidebarOpen(false)} className="fixed inset-0 z-30 bg-black/50 lg:hidden" />
+        <div
+          onClick={() => setSidebarOpen(false)}
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm lg:hidden animate-fade-in transition-opacity"
+        />
       )}
     </div>
   );

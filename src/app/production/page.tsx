@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import ProductionPage from '@/features/production/ProductionPage';
 import FootwearProductionReportPage from '@/features/production/FootwearProductionReportPage';
 import { getProductionMode } from '@/lib/productionMode';
+import { PageSkeleton } from '@/components/PageSkeleton';
 
 export default function Page() {
   const router = useRouter();
@@ -27,8 +28,8 @@ export default function Page() {
   }, [isReady, mode, router]);
 
   if (!isReady) {
-    return null;
+    return <PageSkeleton />;
   }
 
-  return mode === 'footwear' ? null : <ProductionPage />;
+  return mode === 'footwear' ? <PageSkeleton /> : <ProductionPage />;
 }

@@ -49,15 +49,16 @@ function mergeMenuItems(savedItems: MenuItemConfig[]) {
   }));
 }
 
-export default function BottomNav({ onOpenCustomizer }: { onOpenCustomizer: () => void }) {
+export default function BottomNav({
+  onOpenCustomizer,
+  onOpenProfile,
+}: {
+  onOpenCustomizer: () => void;
+  onOpenProfile?: () => void;
+}) {
   const pathname = usePathname();
   const { user, canAccessRoute, logout } = useAuth();
   const [menuItems, setMenuItems] = useState<MenuItemConfig[]>(defaultMenuItems);
-
-  const navClass = (href: string) =>
-    `flex flex-col items-center text-[10px] font-medium transition ${
-      pathname === href ? 'text-cyan-400 font-bold' : 'text-[var(--ec-muted)] hover:text-[var(--ec-foreground)]'
-    }`;
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -87,11 +88,12 @@ export default function BottomNav({ onOpenCustomizer }: { onOpenCustomizer: () =
   }, []);
 
   const isSuperAdmin = user?.section === 'admin';
+  const isHRSection = user?.section === 'hr';
 
   // Filter items based on user section permissions, limit to top 4 for mobile space
   const visibleItems = menuItems
     .filter((item) => item.enabled)
-    .filter((item) => (isSuperAdmin ? true : canAccessRoute(item.href)))
+    .filter((item) => (isSuperAdmin || isHRSection ? true : canAccessRoute(item.href)))
     .slice(0, 4);
 
   const iconMap: Record<string, any> = {
@@ -108,36 +110,57 @@ export default function BottomNav({ onOpenCustomizer }: { onOpenCustomizer: () =
     '/departments': Building,
   };
 
+  const navClass = (isActive: boolean) =>
+    `relative flex flex-col items-center justify-center py-1 px-2 rounded-xl transition-all duration-200 min-w-[52px] ${
+      isActive
+        ? 'text-cyan-500 dark:text-cyan-400 font-bold bg-cyan-500/10 dark:bg-cyan-500/15 shadow-sm'
+        : 'text-[var(--ec-muted)] hover:text-[var(--ec-foreground)] active:scale-95'
+    }`;
+
   return (
-    <nav className="mobile-nav lg:hidden z-30 shadow-lg">
+    <nav className="mobile-nav lg:hidden z-30 shadow-xl border-t border-[var(--ec-border)]">
       {visibleItems.map((item) => {
         const Icon = iconMap[item.href] ?? Home;
+        const isActive = pathname === item.href;
         return (
-          <Link key={item.key} href={item.href} className={navClass(item.href)}>
-            <Icon className="h-4 w-4 mb-0.5" />
-            <span className="truncate max-w-[64px]">{item.label}</span>
+          <Link key={item.key} href={item.href} className={navClass(isActive)}>
+            <Icon className={`h-4 w-4 mb-0.5 transition-transform ${isActive ? 'scale-110' : ''}`} />
+            <span className="text-[10px] truncate max-w-[62px] leading-tight">{item.label}</span>
           </Link>
         );
       })}
 
-      {isSuperAdmin && (
+      {onOpenProfile && (
+        <button
+          type="button"
+          onClick={onOpenProfile}
+          className="relative flex flex-col items-center justify-center py-1 px-2 rounded-xl text-[var(--ec-muted)] hover:text-cyan-400 active:scale-95 transition-all min-w-[50px]"
+        >
+          <div className="h-4 w-4 rounded-full bg-gradient-to-tr from-cyan-500 to-blue-500 text-[9px] font-bold text-white flex items-center justify-center mb-0.5 shadow-sm">
+            {user?.name?.charAt(0) || 'U'}
+          </div>
+          <span className="text-[10px] leading-tight">Profile</span>
+        </button>
+      )}
+
+      {(isSuperAdmin || isHRSection) && (
         <button
           type="button"
           onClick={onOpenCustomizer}
-          className="flex flex-col items-center text-[10px] font-medium text-[var(--ec-muted)] hover:text-cyan-400"
+          className="relative flex flex-col items-center justify-center py-1 px-2 rounded-xl text-[var(--ec-muted)] hover:text-cyan-400 active:scale-95 transition-all min-w-[50px]"
         >
           <Settings2 className="h-4 w-4 mb-0.5" />
-          <span>Menu</span>
+          <span className="text-[10px] leading-tight">Menu</span>
         </button>
       )}
 
       <button
         type="button"
         onClick={logout}
-        className="flex flex-col items-center text-[10px] font-medium text-[var(--ec-muted)] hover:text-red-400"
+        className="relative flex flex-col items-center justify-center py-1 px-2 rounded-xl text-[var(--ec-muted)] hover:text-red-400 active:scale-95 transition-all min-w-[50px]"
       >
         <LogOut className="h-4 w-4 mb-0.5" />
-        <span>Exit</span>
+        <span className="text-[10px] leading-tight">Exit</span>
       </button>
     </nav>
   );

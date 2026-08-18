@@ -65,7 +65,7 @@ export interface AuthContextType {
   activeSection: SectionDefinition | null;
   allSections: SectionDefinition[];
   hrUsers: HRUser[];
-  login: (credentials: LoginCredentials) => Promise<{ success: boolean; error?: string }>;
+  login: (credentials: LoginCredentials) => Promise<{ success: boolean; error?: string; defaultPath?: string }>;
   logout: () => void;
   switchSection: (sectionId: SectionId) => void;
   canAccessRoute: (pathname: string) => boolean;
@@ -73,4 +73,6 @@ export interface AuthContextType {
   updateHRUser: (id: string, updates: Partial<HRUser>) => Promise<{ success: boolean; error?: string }>;
   deleteHRUser: (id: string) => Promise<{ success: boolean; error?: string }>;
   refreshHRUsers: () => Promise<void>;
+  updateUserAvatar: (avatarDataUrl: string | null) => void;
+  updateUserProfile: (updates: Partial<AuthUser>) => void;
 }
