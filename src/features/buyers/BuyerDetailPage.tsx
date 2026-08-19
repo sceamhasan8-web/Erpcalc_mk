@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useState, useEffect } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { apiService } from '@/services/apiService';
 import { firebaseService } from '@/services/firebaseService';
@@ -97,6 +97,8 @@ export function BuyerDetailPage({ buyerId }: BuyerDetailPageProps) {
     notes: '',
     requiredDepartments: [] as string[],
   });
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const isSubmittingRef = useRef<boolean>(false);
 
   const selectedArticle = useMemo(() => articles.find((a) => a.id === form.articleId) ?? null, [articles, form.articleId]);
 
@@ -142,6 +144,11 @@ export function BuyerDetailPage({ buyerId }: BuyerDetailPageProps) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+
+    if (isSubmittingRef.current || isSubmitting) {
+      return;
+    }
+
     if (!form.articleId) {
       showAlert({ title: 'Missing Article', message: 'Please choose an article.', type: 'warning' });
       return;
@@ -154,6 +161,9 @@ export function BuyerDetailPage({ buyerId }: BuyerDetailPageProps) {
       showAlert({ title: 'Missing Quantity', message: 'Please enter a valid order quantity.', type: 'warning' });
       return;
     }
+
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
 
     try {
       const created = await apiService.createBuyerOrder({
@@ -177,6 +187,9 @@ export function BuyerDetailPage({ buyerId }: BuyerDetailPageProps) {
     } catch (error) {
       console.error('Failed to create buyer order', error);
       showAlert({ title: 'Order Failed', message: 'Unable to save order. Please try again.', type: 'error' });
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
     }
   }
 
@@ -407,8 +420,12 @@ export function BuyerDetailPage({ buyerId }: BuyerDetailPageProps) {
                     <button type="button" onClick={() => setShowReceiveForm(false)} className="rounded px-3 py-1.5 text-sm border border-[var(--ec-border)] hover:bg-[var(--ec-surface)]">
                       Cancel
                     </button>
-                    <button type="submit" className="rounded bg-cyan-600 hover:bg-cyan-700 px-3 py-1.5 text-sm font-medium text-white">
-                      Receive Order
+                    <button
+                      type="submit"
+                      disabled={isSubmitting}
+                      className="rounded bg-cyan-600 hover:bg-cyan-700 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isSubmitting ? 'Placing Order...' : 'Receive Order'}
                     </button>
                   </div>
                 </form>

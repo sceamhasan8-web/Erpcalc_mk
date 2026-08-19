@@ -14,6 +14,7 @@ import {
   TrendingUp, 
   AlertCircle, 
   Trash2, 
+  Pencil,
   Calendar, 
   Package, 
   Search, 
@@ -32,6 +33,16 @@ const GENDER_CATEGORIES = [
   { id: 'womens' as const, label: "Women's", rangeText: '35# - 41#', sizes: [35, 36, 37, 38, 39, 40, 41] },
   { id: 'both' as const, label: "Men's & Women's", rangeText: '35# - 46#', sizes: [35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46] },
 ];
+
+const DEFAULT_PROCESSES: Record<string, string[]> = {
+  printing: [],
+  embossing: [],
+};
+
+function isMultiProcessDept(dept: string): boolean {
+  const lower = (dept || '').toLowerCase().trim();
+  return lower === 'printing' || lower === 'embossing';
+}
 
 export function ProductionPage() {
   const defaultProductionUnit = useProductionUnit();
@@ -65,12 +76,30 @@ export function ProductionPage() {
   const [selectedOrderId, setSelectedOrderId] = useState<string>('');
   const [selectedItemId, setSelectedItemId] = useState<string>('');
   const [selectedDepartment, setSelectedDepartment] = useState<string>('');
+  const [selectedProcess, setSelectedProcess] = useState<string>('');
+  const [customProcesses, setCustomProcesses] = useState<Record<string, string[]>>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = window.localStorage.getItem('ec-custom-processes');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed && typeof parsed === 'object') return parsed;
+        }
+      } catch (e) {}
+    }
+    return DEFAULT_PROCESSES;
+  });
+  const [showAddProcessModal, setShowAddProcessModal] = useState<boolean>(false);
+  const [editingProcess, setEditingProcess] = useState<{ oldName: string; newName: string } | null>(null);
+  const [newProcessName, setNewProcessName] = useState<string>('');
   const [entryDate, setEntryDate] = useState<string>(getTodayDateString);
   const [entryTime, setEntryTime] = useState<string>(getCurrentTimeString);
   const [sizeQuantities, setSizeQuantities] = useState<Record<number, string>>({});
   const [directQuantity, setDirectQuantity] = useState<string>('');
   const [notes, setNotes] = useState<string>('');
   const [previewImage, setPreviewImage] = useState<{ src: string; title: string } | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const isSubmittingRef = React.useRef<boolean>(false);
 
   // Filtering & view tabs
   const [searchQuery, setSearchQuery] = useState('');
@@ -201,50 +230,103 @@ export function ProductionPage() {
 
   // Available departments strictly for the selected item
   const availableDepartments = useMemo(() => {
-    if (selectedItem?.requiredDepartments && selectedItem.requiredDepartments.length > 0) {
-      return selectedItem.requiredDepartments;
+    // 1. If this specific item has custom specific departments configured:
+    const validItemDepts = (selectedItem?.requiredDepartments || []).filter((d) =>
+      departments.length > 0 ? departments.includes(d) : true
+    );
+
+    if (validItemDepts.length > 0) {
+      return validItemDepts;
     }
 
-    const itemsWithSpecificDepts = orderItems.filter(
-      (it) => it.id !== selectedItem?.id && it.requiredDepartments && it.requiredDepartments.length > 0
+    // 2. If no item-specific customization, automatically use the Order's Required Departments:
+    const validOrderDepts = (selectedOrder?.requiredDepartments || []).filter((d) =>
+      departments.length > 0 ? departments.includes(d) : true
     );
 
-    const orderLevelDepts = (selectedOrder?.requiredDepartments || []);
-
-    if (itemsWithSpecificDepts.length === 0) {
-      return orderLevelDepts.length > 0
-        ? orderLevelDepts
-        : departments.length > 0 ? departments : ['Lasting', 'DIP', 'Packing', 'Goods Store'];
+    if (validOrderDepts.length > 0) {
+      return validOrderDepts;
     }
 
-    const deptsInAllSpecific = itemsWithSpecificDepts[0].requiredDepartments!.filter((d) =>
-      itemsWithSpecificDepts.every((it) => it.requiredDepartments!.includes(d))
-    );
+    // 3. Fallback: Active departments list from system
+    return departments;
+  }, [selectedItem, selectedOrder, departments]);
 
-    const exclusiveToSpecificItems = new Set(
-      itemsWithSpecificDepts
-        .flatMap((it) => it.requiredDepartments || [])
-        .filter((d) => !deptsInAllSpecific.includes(d))
-    );
+  // Available processes for the selected department
+  const currentDeptProcesses = useMemo(() => {
+    if (!selectedDepartment || !isMultiProcessDept(selectedDepartment)) return [];
+    const key = selectedDepartment.toLowerCase().trim();
+    const list = customProcesses[key] || DEFAULT_PROCESSES[key] || [];
 
-    const cleaned = orderLevelDepts.filter((d) => !exclusiveToSpecificItems.has(d));
-    if (cleaned.length > 0) return cleaned;
+    const recordedInFlows = flows
+      .filter((f) => f.orderId === selectedOrder?.id && f.department === selectedDepartment && f.processName)
+      .map((f) => f.processName as string);
 
-    const fallback = (departments.length > 0 ? departments : ['Lasting', 'DIP', 'Packing', 'Goods Store'])
-      .filter((d) => !exclusiveToSpecificItems.has(d));
-    return fallback.length > 0 ? fallback : ['Lasting', 'DIP', 'Packing', 'Goods Store'];
-  }, [selectedItem, selectedOrder, orderItems, departments]);
+    return Array.from(new Set([...list, ...recordedInFlows]));
+  }, [selectedDepartment, customProcesses, flows, selectedOrder]);
 
-  // Set default department when item or available departments change
+  // Keep selectedProcess synced when department or processes change
   useEffect(() => {
-    if (availableDepartments.length > 0) {
-      if (!selectedDepartment || !availableDepartments.includes(selectedDepartment)) {
-        setSelectedDepartment(availableDepartments[0]);
+    if (isMultiProcessDept(selectedDepartment)) {
+      if (!selectedProcess || !currentDeptProcesses.includes(selectedProcess)) {
+        setSelectedProcess(currentDeptProcesses[0] || '');
       }
     } else {
-      setSelectedDepartment('');
+      setSelectedProcess('');
     }
-  }, [availableDepartments, selectedItemId]);
+  }, [selectedDepartment, currentDeptProcesses, selectedProcess]);
+
+  // Helper to calculate completion for any department
+  const getDeptCompletion = (deptName: string) => {
+    const target = selectedItem?.quantity || selectedOrder?.quantity || 0;
+    const deptFlows = flows.filter(
+      (f) =>
+        f.orderId === selectedOrder?.id &&
+        f.department === deptName &&
+        (!selectedItem || !f.itemId || f.itemId === selectedItem.id)
+    );
+
+    if (isMultiProcessDept(deptName)) {
+      const key = deptName.toLowerCase().trim();
+      const configuredStages = customProcesses[key] || [];
+      const recordedInFlows = Array.from(new Set(deptFlows.map((f) => f.processName).filter(Boolean))) as string[];
+      const allActiveStages = Array.from(new Set([...configuredStages, ...recordedInFlows]));
+
+      if (allActiveStages.length === 0) {
+        const total = deptFlows.reduce((sum, f) => sum + f.completed, 0);
+        return { completed: total, target, isComplete: total >= target && target > 0, processCount: 0 };
+      }
+
+      // Calculate output sum for every stage. Any stage with 0 output will bring the minimum to 0.
+      const processTotals = allActiveStages.map((p) =>
+        deptFlows.filter((f) => f.processName === p).reduce((sum, f) => sum + f.completed, 0)
+      );
+
+      // Overall completed count is the minimum across ALL configured stages
+      const minCompleted = Math.min(...processTotals);
+      const isComplete = processTotals.every((qty) => qty >= target) && target > 0;
+      return { completed: minCompleted, target, isComplete, processCount: allActiveStages.length };
+    }
+
+    const total = deptFlows.reduce((sum, f) => sum + f.completed, 0);
+    return { completed: total, target, isComplete: total >= target && target > 0, processCount: 0 };
+  };
+
+  // Helper to calculate progress for a specific process
+  const getProcessProgress = (procName: string) => {
+    const target = selectedItem?.quantity || selectedOrder?.quantity || 0;
+    const pFlows = flows.filter(
+      (f) =>
+        f.orderId === selectedOrder?.id &&
+        f.department === selectedDepartment &&
+        (!selectedItem || !f.itemId || f.itemId === selectedItem.id) &&
+        f.processName === procName
+    );
+    const completed = pFlows.reduce((sum, f) => sum + f.completed, 0);
+    const remaining = Math.max(0, target - completed);
+    const isComplete = completed >= target && target > 0;
+    return { completed, target, remaining, isComplete };
+  };
 
   // Selected category & sizes config
   const activeCategoryConfig = useMemo(() => {
@@ -252,7 +334,7 @@ export function ProductionPage() {
     return GENDER_CATEGORIES.find((c) => c.id === cat) || GENDER_CATEGORIES[0];
   }, [selectedItem]);
 
-  // Calculate produced breakdown in this department for the selected item
+  // Calculate produced breakdown in this department (and process) for the selected item
   const itemDeptProduced = useMemo(() => {
     if (!selectedOrder || !selectedDepartment) return { total: 0, bySize: {} as Record<number, number> };
 
@@ -260,7 +342,8 @@ export function ProductionPage() {
       (f) =>
         f.orderId === selectedOrder.id &&
         f.department === selectedDepartment &&
-        (!selectedItem || !f.itemId || f.itemId === selectedItem.id)
+        (!selectedItem || !f.itemId || f.itemId === selectedItem.id) &&
+        (!isMultiProcessDept(selectedDepartment) || !selectedProcess || f.processName === selectedProcess)
     );
 
     const total = itemFlows.reduce((sum, f) => sum + f.completed, 0);
@@ -276,7 +359,7 @@ export function ProductionPage() {
     });
 
     return { total, bySize };
-  }, [selectedOrder, selectedDepartment, selectedItem, flows, activeCategoryConfig]);
+  }, [selectedOrder, selectedDepartment, selectedItem, selectedProcess, flows, activeCategoryConfig]);
 
   // Calculate this entry's total quantity
   const currentEntryQuantity = useMemo(() => {
@@ -318,9 +401,106 @@ export function ProductionPage() {
     setDirectQuantity('');
   }
 
+  // Handler to add custom process
+  function handleAddCustomProcess(e: FormEvent) {
+    e.preventDefault();
+    const name = newProcessName.trim();
+    if (!name || !selectedDepartment) return;
+    const key = selectedDepartment.toLowerCase().trim();
+    const prevList = customProcesses[key] || [];
+    if (!prevList.includes(name)) {
+      const updated = { ...customProcesses, [key]: [...prevList, name] };
+      setCustomProcesses(updated);
+      try {
+        window.localStorage.setItem('ec-custom-processes', JSON.stringify(updated));
+      } catch (err) {}
+    }
+    setSelectedProcess(name);
+    setNewProcessName('');
+    setShowAddProcessModal(false);
+    toast.success(`Stage "${name}" added to ${selectedDepartment}!`);
+  }
+
+  // Handler to rename a process
+  async function handleRenameProcess(e: FormEvent) {
+    e.preventDefault();
+    if (!editingProcess || !selectedDepartment) return;
+    const { oldName, newName } = editingProcess;
+    const trimmedNew = newName.trim();
+    if (!trimmedNew || trimmedNew === oldName) {
+      setEditingProcess(null);
+      return;
+    }
+
+    const key = selectedDepartment.toLowerCase().trim();
+    const prevList = customProcesses[key] || [];
+    const updatedList = prevList.map((p) => (p === oldName ? trimmedNew : p));
+    const updated = { ...customProcesses, [key]: updatedList };
+    setCustomProcesses(updated);
+    try {
+      window.localStorage.setItem('ec-custom-processes', JSON.stringify(updated));
+    } catch (err) {}
+
+    // Update in-memory flows and backend if needed
+    const matchingFlows = flows.filter((f) => f.department === selectedDepartment && f.processName === oldName);
+    if (matchingFlows.length > 0) {
+      const updatedFlows = flows.map((f) => {
+        if (f.department === selectedDepartment && f.processName === oldName) {
+          return { ...f, processName: trimmedNew };
+        }
+        return f;
+      });
+      setFlows(updatedFlows);
+      for (const f of matchingFlows) {
+        try {
+          await apiService.updateProductionFlow(f.id, { processName: trimmedNew });
+        } catch (err) {
+          console.error('Failed to sync updated process name to flow', err);
+        }
+      }
+    }
+
+    if (selectedProcess === oldName) {
+      setSelectedProcess(trimmedNew);
+    }
+    setEditingProcess(null);
+    toast.success(`Stage renamed to "${trimmedNew}"!`);
+  }
+
+  // Handler to delete a process
+  async function handleDeleteProcess(procName: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    if (!selectedDepartment) return;
+    const confirmed = await showConfirm({
+      title: `Delete Stage "${procName}"?`,
+      message: `Are you sure you want to remove the stage "${procName}" from ${selectedDepartment}?`,
+      type: 'warning',
+    });
+    if (!confirmed) return;
+
+    const key = selectedDepartment.toLowerCase().trim();
+    const prevList = customProcesses[key] || [];
+    const updatedList = prevList.filter((p) => p !== procName);
+    const updated = { ...customProcesses, [key]: updatedList };
+    setCustomProcesses(updated);
+    try {
+      window.localStorage.setItem('ec-custom-processes', JSON.stringify(updated));
+    } catch (err) {}
+
+    if (selectedProcess === procName) {
+      setSelectedProcess(updatedList[0] || '');
+    }
+    toast.success(`Stage "${procName}" removed from ${selectedDepartment}!`);
+  }
+
   // Submit production entry
   async function handleSubmitEntry(e: FormEvent) {
     e.preventDefault();
+
+    // Prevent multi-click duplicate submissions
+    if (isSubmittingRef.current || isSubmitting) {
+      return;
+    }
 
     if (!selectedOrder) {
       showAlert({ title: 'No Order Selected', message: 'Please select an order to proceed.', type: 'warning' });
@@ -332,6 +512,12 @@ export function ProductionPage() {
       return;
     }
 
+    const isMulti = isMultiProcessDept(selectedDepartment);
+    if (isMulti && currentDeptProcesses.length > 0 && !selectedProcess) {
+      showAlert({ title: 'No Stage Selected', message: `Please select a specific ${selectedDepartment} stage.`, type: 'warning' });
+      return;
+    }
+
     if (currentEntryQuantity <= 0) {
       showAlert({
         title: 'Zero Quantity',
@@ -340,6 +526,9 @@ export function ProductionPage() {
       });
       return;
     }
+
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
 
     // Process size breakdown
     const numericSizeBreakdown: Record<string, number> = {};
@@ -369,6 +558,7 @@ export function ProductionPage() {
       const flowPayload: Omit<ProductionFlow, 'id'> = {
         orderId: selectedOrder.id,
         department: selectedDepartment,
+        processName: isMulti ? (selectedProcess || 'General') : undefined,
         completed: currentEntryQuantity,
         pending: 0,
         rejected: 0,
@@ -386,9 +576,10 @@ export function ProductionPage() {
 
       const displayDateStr = finalDate.toLocaleDateString([], { day: 'numeric', month: 'short' });
       const displayTimeStr = finalDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const processInfo = isMulti && selectedProcess ? ` (${selectedProcess})` : '';
 
       toast.success(
-        `Recorded ${currentEntryQuantity} ${selectedOrder.unit || defaultProductionUnit} for ${selectedDepartment} (${displayDateStr} at ${displayTimeStr})!`
+        `Recorded ${currentEntryQuantity} ${selectedOrder.unit || defaultProductionUnit} for ${selectedDepartment}${processInfo} (${displayDateStr} at ${displayTimeStr})!`
       );
 
       // Reset entry inputs
@@ -407,6 +598,9 @@ export function ProductionPage() {
         message: 'Unable to save production entry. Please try again.',
         type: 'error',
       });
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
     }
   }
 
@@ -858,6 +1052,11 @@ export function ProductionPage() {
                               <span className="px-2 py-0.5 rounded-md font-extrabold text-[11px] bg-cyan-500/15 text-cyan-400 border border-cyan-500/25">
                                 {f.department}
                               </span>
+                              {f.processName && (
+                                <span className="px-2 py-0.5 rounded-md font-bold text-[10px] bg-purple-500/15 text-purple-300 border border-purple-500/25">
+                                  ⚙️ {f.processName}
+                                </span>
+                              )}
                             </div>
 
                             {/* Prominent Red Delete Button */}
@@ -1052,9 +1251,16 @@ export function ProductionPage() {
 
                               {/* Department */}
                               <td className="py-3 px-3 whitespace-nowrap">
-                                <span className="px-2.5 py-1 rounded-lg font-extrabold text-xs bg-cyan-500/15 text-cyan-400 border border-cyan-500/25">
-                                  {f.department}
-                                </span>
+                                <div className="flex flex-col gap-1 items-start">
+                                  <span className="px-2.5 py-1 rounded-lg font-extrabold text-xs bg-cyan-500/15 text-cyan-400 border border-cyan-500/25">
+                                    {f.department}
+                                  </span>
+                                  {f.processName && (
+                                    <span className="px-2 py-0.5 rounded-md font-bold text-[10px] bg-purple-500/15 text-purple-300 border border-purple-500/25">
+                                      ⚙️ {f.processName}
+                                    </span>
+                                  )}
+                                </div>
                               </td>
 
                               {/* Output Quantity Column (Total vs Size-Wise) */}
@@ -1103,113 +1309,17 @@ export function ProductionPage() {
                                 <button
                                   type="button"
                                   onClick={() => handleDeleteFlow(f)}
-                                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white border border-red-500/30 text-xs font-bold transition-all shadow-sm active:scale-95"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white border border-red-500/25 text-xs font-bold transition active:scale-95 shadow-sm"
                                   title="Delete this entry"
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
-                                  <span className="text-[11px]">Delete</span>
+                                  <span>Delete</span>
                                 </button>
                               </td>
                             </tr>
                           );
                         })}
                       </tbody>
-
-                      {/* GRAND TOTAL TABLE FOOTER */}
-                      <tfoot>
-                        <tr className="border-t-2 border-cyan-500/40 bg-gradient-to-r from-cyan-500/10 via-[var(--ec-surface)] to-emerald-500/10 font-bold text-xs">
-                          {/* Date & Time col */}
-                          <td className="py-3.5 px-3 whitespace-nowrap">
-                            <div className="flex items-center gap-2 text-cyan-400">
-                              <Layers className="h-4 w-4 flex-shrink-0" />
-                              <div className="flex flex-col">
-                                <span className="font-black uppercase tracking-wider text-xs text-[var(--ec-foreground)]">
-                                  GRAND TOTAL
-                                </span>
-                                <span className="text-[10px] text-cyan-400 font-semibold">
-                                  All Filtered Records
-                                </span>
-                              </div>
-                            </div>
-                          </td>
-
-                          {/* Order Number col */}
-                          <td className="py-3.5 px-3 whitespace-nowrap">
-                            <span className="inline-flex items-center gap-1 font-bold text-xs px-2.5 py-1 rounded-md bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
-                              {totalProductionStats.totalEntries} {totalProductionStats.totalEntries === 1 ? 'Entry' : 'Entries'}
-                            </span>
-                          </td>
-
-                          {/* Article & Color col */}
-                          <td className="py-3.5 px-3 text-[11px] text-[var(--ec-muted)]">
-                            <span className="font-semibold text-[var(--ec-foreground)]">All Orders Combined</span>
-                          </td>
-
-                          {/* Department col */}
-                          <td className="py-3.5 px-3 whitespace-nowrap">
-                            <span className="text-[11px] font-bold text-[var(--ec-muted)]">
-                              {Object.keys(totalProductionStats.deptBreakdown).length} Departments
-                            </span>
-                          </td>
-
-                          {/* Total Output Entry / Size Breakdown col */}
-                          <td className="py-3.5 px-3">
-                            {productionViewMode === 'size' ? (
-                              totalProductionStats.hasSizes ? (
-                                <div className="space-y-1.5 py-1">
-                                  <div className="flex flex-wrap items-center gap-1.5 max-w-[340px]">
-                                    {Object.entries(totalProductionStats.sizeBreakdown).map(([sz, qty]) => (
-                                      <span
-                                        key={sz}
-                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-cyan-500/15 border border-cyan-500/30 text-[11px]"
-                                      >
-                                        <span className="text-[var(--ec-muted)] font-bold">{sz}#:</span>
-                                        <strong className="text-cyan-400 font-extrabold">{qty.toLocaleString()}</strong>
-                                      </span>
-                                    ))}
-                                  </div>
-                                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-emerald-500/15 border border-emerald-500/30 shadow-sm">
-                                    <span className="text-[10px] text-emerald-300 font-extrabold uppercase tracking-wider">
-                                      Total Sum:
-                                    </span>
-                                    <span className="font-black text-sm text-emerald-400">
-                                      +{totalProductionStats.totalQty.toLocaleString()} {defaultProductionUnit}
-                                    </span>
-                                  </div>
-                                </div>
-                              ) : (
-                                <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 shadow-sm">
-                                  <span className="text-[10px] text-emerald-300 font-extrabold uppercase tracking-wider">
-                                    Total Output:
-                                  </span>
-                                  <span className="font-black text-base text-emerald-400">
-                                    +{totalProductionStats.totalQty.toLocaleString()} {defaultProductionUnit}
-                                  </span>
-                                </div>
-                              )
-                            ) : (
-                              <div className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 shadow-sm">
-                                <span className="font-black text-base sm:text-lg text-emerald-400">
-                                  +{totalProductionStats.totalQty.toLocaleString()}
-                                </span>
-                                <span className="text-xs text-emerald-300 font-extrabold uppercase">
-                                  {defaultProductionUnit}
-                                </span>
-                              </div>
-                            )}
-                          </td>
-
-                          {/* Notes col */}
-                          <td className="py-3.5 px-3 text-[11px] text-[var(--ec-muted)]">
-                            Summary Row
-                          </td>
-
-                          {/* Action col */}
-                          <td className="py-3.5 px-3 text-center whitespace-nowrap sticky right-0 bg-[var(--ec-surface)] shadow-[-4px_0_6px_rgba(0,0,0,0.1)] z-10 text-[var(--ec-muted)] font-bold">
-                            —
-                          </td>
-                        </tr>
-                      </tfoot>
                     </table>
                   </div>
 
@@ -1283,40 +1393,32 @@ export function ProductionPage() {
                 </div>
 
                 {/* Step 1: Order Selector */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between flex-wrap gap-1">
-                    <label className="text-[11px] sm:text-xs font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
-                      <span>1️⃣</span> Select Order to Produce:
-                    </label>
-                    {selectedOrder && (
-                      <span className="hidden sm:inline text-xs text-[var(--ec-muted)]">
-                        Buyer: <strong className="text-[var(--ec-foreground)]">{selectedOrder.buyerName}</strong> &bull; Total: <strong className="text-cyan-400">{selectedOrder.quantity} {selectedOrder.unit || defaultProductionUnit}</strong>
-                      </span>
-                    )}
-                  </div>
-
+                <div className="space-y-1.5">
+                  <label className="text-[11px] sm:text-xs font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
+                    <span>1️⃣</span> Select Order to Produce:
+                  </label>
                   <select
                     value={selectedOrderId}
                     onChange={(e) => setSelectedOrderId(e.target.value)}
-                    className="w-full rounded-xl border border-[var(--ec-border)] bg-[var(--ec-surface)] px-3 py-2.5 text-xs sm:text-sm text-[var(--ec-foreground)] font-semibold focus:outline-none focus:border-cyan-500"
+                    className="w-full rounded-xl border border-[var(--ec-border)] bg-[var(--ec-surface)] px-3 py-2.5 text-xs sm:text-sm font-bold text-[var(--ec-foreground)] focus:outline-none focus:border-cyan-500 cursor-pointer"
                   >
                     {uniqueOrders.map((o) => (
                       <option key={o.id} value={o.id}>
-                        {o.orderNumber} — {o.buyerName || 'Unknown'} — {o.quantity} {o.unit || defaultProductionUnit} ({o.items?.length || 1} Item{o.items && o.items.length > 1 ? 's' : ''})
+                        {o.orderNumber || o.id} — {o.buyerName || 'Buyer'} — {o.quantity} {o.unit || defaultProductionUnit} ({o.items?.length || 1} {o.items?.length === 1 ? 'Item' : 'Items'})
                       </option>
                     ))}
                   </select>
                 </div>
 
-                {/* Step 2: Article & Color (Item) Selector */}
-                {selectedOrder && orderItems.length > 0 && (
+                {/* Step 2: Multi-Item / Variant Selector (if order has variants) */}
+                {orderItems.length > 1 && (
                   <div className="space-y-2.5 pt-4 border-t border-[var(--ec-border)]">
                     <div className="flex items-center justify-between">
                       <label className="text-[11px] sm:text-xs font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
                         <span>2️⃣</span> Select Article & Color Item:
                       </label>
-                      <span className="text-[10px] sm:text-[11px] text-[var(--ec-muted)]">
-                        {orderItems.length} variant{orderItems.length > 1 ? 's' : ''}
+                      <span className="text-[11px] text-[var(--ec-muted)] font-semibold">
+                        {orderItems.length} variants
                       </span>
                     </div>
 
@@ -1327,38 +1429,36 @@ export function ProductionPage() {
                           <div
                             key={it.id}
                             onClick={() => setSelectedItemId(it.id)}
-                            className={`cursor-pointer rounded-xl border p-2.5 sm:p-3 transition flex items-start gap-2.5 ${
+                            className={`p-3 rounded-2xl border cursor-pointer transition flex items-center gap-3 relative overflow-hidden ${
                               isSelected
-                                ? 'border-cyan-500 bg-cyan-500/10 ring-1 ring-cyan-400/40 shadow-sm'
-                                : 'border-[var(--ec-border)] bg-[var(--ec-surface)] hover:border-cyan-500/30'
+                                ? 'border-cyan-500 bg-cyan-500/10 ring-2 ring-cyan-500/40 shadow-sm'
+                                : 'border-[var(--ec-border)] bg-[var(--ec-surface)]/60 hover:bg-[var(--ec-surface)] hover:border-cyan-500/30'
                             }`}
                           >
-                            {it.image ? (
-                              <div
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setPreviewImage({ src: it.image!, title: `${it.articleName} • ${it.color}` });
-                                }}
-                                className="w-10 h-10 sm:w-12 sm:h-12 rounded-lg border border-cyan-500/30 overflow-hidden flex-shrink-0 bg-black/20"
-                              >
+                            <div className="w-12 h-12 rounded-xl bg-[var(--ec-card)] border border-[var(--ec-border)] flex items-center justify-center flex-shrink-0 overflow-hidden">
+                              {it.image ? (
                                 <img src={it.image} alt={it.articleName} className="w-full h-full object-cover" />
-                              </div>
-                            ) : (
-                              <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-lg border border-[var(--ec-border)] bg-[var(--ec-card)] flex items-center justify-center text-[var(--ec-muted)] flex-shrink-0">
-                                <ImageIcon className="h-4 w-4 sm:h-5 sm:w-5 opacity-40" />
-                              </div>
-                            )}
+                              ) : (
+                                <ImageIcon className="h-5 w-5 text-[var(--ec-muted)]" />
+                              )}
+                            </div>
 
-                            <div className="flex-1 min-w-0">
+                            <div className="min-w-0 flex-1">
                               <div className="flex items-center justify-between gap-1">
-                                <span className="font-bold text-xs sm:text-sm text-[var(--ec-foreground)] truncate">{it.articleName}</span>
-                                <span className="font-black text-[11px] sm:text-xs text-cyan-400 flex-shrink-0">{it.quantity} {selectedOrder.unit || defaultProductionUnit}</span>
+                                <p className="font-bold text-xs sm:text-sm text-[var(--ec-foreground)] truncate">
+                                  {it.articleName}
+                                </p>
+                                <span className="text-xs font-black text-cyan-400 flex-shrink-0">
+                                  {it.quantity} {selectedOrder?.unit || defaultProductionUnit}
+                                </span>
                               </div>
-                              <div className="text-[11px] text-[var(--ec-muted)] mt-0.5">
+
+                              <p className="text-[11px] text-[var(--ec-muted)] truncate mt-0.5">
                                 Color: <strong className="text-[var(--ec-foreground)]">{it.color}</strong>
-                              </div>
+                              </p>
+
                               {it.genderCategory && (
-                                <span className="inline-block text-[8px] sm:text-[9px] uppercase font-bold px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 mt-1">
+                                <span className="inline-block mt-1 text-[9px] uppercase font-bold px-1.5 py-0.2 rounded bg-[var(--ec-card)] text-cyan-400 border border-[var(--ec-border)]">
                                   {it.genderCategory === 'womens' ? "Women's" : it.genderCategory === 'both' ? "Both" : "Men's"}
                                 </span>
                               )}
@@ -1450,26 +1550,177 @@ export function ProductionPage() {
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     {availableDepartments.map((dept) => {
                       const isSelected = selectedDepartment === dept;
+                      const { completed, target, processCount } = getDeptCompletion(dept);
+                      const isMulti = isMultiProcessDept(dept);
                       return (
                         <button
                           key={dept}
                           type="button"
                           onClick={() => setSelectedDepartment(dept)}
-                          className={`p-2.5 sm:p-3 rounded-xl border text-xs font-bold transition text-left flex flex-col justify-between gap-1 ${
+                          className={`p-2.5 sm:p-3 rounded-xl border text-xs font-bold transition text-left flex flex-col justify-between gap-1.5 ${
                             isSelected
-                              ? 'border-cyan-500 bg-gradient-to-r from-blue-600 to-cyan-500 text-white shadow-md shadow-cyan-500/20'
+                              ? 'border-cyan-500 bg-gradient-to-r from-blue-600 to-cyan-500 text-white shadow-md shadow-cyan-500/20 ring-2 ring-cyan-400/40'
                               : 'border-[var(--ec-border)] bg-[var(--ec-surface)] text-[var(--ec-foreground)] hover:border-cyan-500/40'
                           }`}
                         >
-                          <span className="truncate">{dept}</span>
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="truncate">{dept}</span>
+                            {isMulti && (
+                              <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-black uppercase ${
+                                isSelected ? 'bg-white/20 text-white' : 'bg-purple-500/15 text-purple-400 border border-purple-500/25'
+                              }`}>
+                                Multi-Process
+                              </span>
+                            )}
+                          </div>
                           <span className={`text-[10px] font-medium ${isSelected ? 'text-cyan-100' : 'text-[var(--ec-muted)]'}`}>
-                            Done: {itemDeptProduced.total} / {selectedItem?.quantity || selectedOrder?.quantity || 0}
+                            Done: <strong className={isSelected ? 'text-white' : 'text-cyan-400'}>{completed}</strong> / {target} {processCount > 1 ? `(${processCount} stages)` : ''}
                           </span>
                         </button>
                       );
                     })}
                   </div>
                 </div>
+
+                {/* Step 4.5: Multi-Process Stage Selector (For Printing & Embossing) */}
+                {isMultiProcessDept(selectedDepartment) && (
+                  <div className="space-y-3 pt-4 border-t border-[var(--ec-border)] bg-gradient-to-r from-purple-500/5 via-cyan-500/5 to-blue-500/5 p-3.5 sm:p-4 rounded-2xl border border-cyan-500/30 animate-fadeIn">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div>
+                        <label className="text-[11px] sm:text-xs font-black uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
+                          <span>⚙️</span> {selectedDepartment} Stages / Processes:
+                        </label>
+                        <p className="text-[11px] text-[var(--ec-muted)] mt-0.5">
+                          {currentDeptProcesses.length > 0
+                            ? `Record production separately for each stage. All stages must be completed for ${selectedDepartment} to be 100% complete.`
+                            : `Add multiple stages (e.g. Screen Print, Foil, Emboss) or enter direct output below.`}
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setShowAddProcessModal(true)}
+                        className="text-xs font-bold text-white bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 px-3.5 py-1.5 rounded-xl transition flex items-center gap-1.5 shadow-sm shadow-cyan-500/20"
+                      >
+                        <PlusCircle className="h-3.5 w-3.5" />
+                        <span>+ Add Stage</span>
+                      </button>
+                    </div>
+
+                    {currentDeptProcesses.length === 0 ? (
+                      <div className="p-4 rounded-xl border border-dashed border-cyan-500/30 bg-[var(--ec-surface)]/60 flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left">
+                        <div className="space-y-0.5">
+                          <p className="text-xs font-bold text-[var(--ec-foreground)]">No stages added yet for {selectedDepartment}</p>
+                          <p className="text-[11px] text-[var(--ec-muted)]">Click "+ Add Stage" to create separate production stages, or record output directly below.</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowAddProcessModal(true)}
+                          className="text-xs font-bold px-3.5 py-1.5 rounded-xl bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/25 transition whitespace-nowrap"
+                        >
+                          + Add First Stage
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+                        {currentDeptProcesses.map((proc) => {
+                          const isSelected = selectedProcess === proc;
+                          const { completed, target, isComplete } = getProcessProgress(proc);
+                          const pct = target > 0 ? Math.min(100, Math.round((completed / target) * 100)) : 0;
+
+                          return (
+                            <div
+                              key={proc}
+                              onClick={() => setSelectedProcess(proc)}
+                              className={`group p-3.5 rounded-2xl border cursor-pointer transition-all duration-200 flex flex-col justify-between gap-2.5 relative shadow-sm ${
+                                isSelected
+                                  ? 'border-cyan-500 bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-600 text-white ring-2 ring-cyan-400 shadow-md shadow-blue-500/20'
+                                  : 'border-[var(--ec-border)] bg-[var(--ec-card)] text-[var(--ec-foreground)] hover:border-cyan-500/60 hover:bg-[var(--ec-surface)]'
+                              }`}
+                            >
+                              {/* Top row: Stage Name + Status Badge + Actions */}
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span className={`text-xs sm:text-sm font-black truncate capitalize ${
+                                    isSelected ? 'text-white' : 'text-[var(--ec-foreground)]'
+                                  }`}>
+                                    {proc}
+                                  </span>
+                                  {isComplete && (
+                                    <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-black uppercase tracking-wider flex-shrink-0 ${
+                                      isSelected ? 'bg-emerald-400 text-emerald-950' : 'bg-emerald-500/15 text-emerald-500 border border-emerald-500/30'
+                                    }`}>
+                                      ✓ Done
+                                    </span>
+                                  )}
+                                </div>
+
+                                {/* Action Buttons: Rename & Delete */}
+                                <div className="flex items-center gap-1 flex-shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setEditingProcess({ oldName: proc, newName: proc });
+                                    }}
+                                    className={`p-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 ${
+                                      isSelected
+                                        ? 'bg-white/20 hover:bg-white/35 text-white'
+                                        : 'bg-[var(--ec-surface)] hover:bg-cyan-500/15 text-[var(--ec-muted)] hover:text-cyan-500 border border-[var(--ec-border)] hover:border-cyan-500/30'
+                                    }`}
+                                    title="Rename Stage"
+                                  >
+                                    <Pencil className="h-3 w-3" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => handleDeleteProcess(proc, e)}
+                                    className={`p-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 ${
+                                      isSelected
+                                        ? 'bg-red-500/30 hover:bg-red-500 text-white'
+                                        : 'bg-[var(--ec-surface)] hover:bg-red-500/15 text-red-400 hover:text-red-600 border border-[var(--ec-border)] hover:border-red-500/30'
+                                    }`}
+                                    title="Remove Stage"
+                                  >
+                                    <Trash2 className="h-3 w-3" />
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Progress Bar */}
+                              <div className={`w-full h-1.5 rounded-full overflow-hidden ${
+                                isSelected ? 'bg-white/25' : 'bg-[var(--ec-surface)] border border-[var(--ec-border)]/60'
+                              }`}>
+                                <div
+                                  className={`h-full rounded-full transition-all duration-300 ${
+                                    isComplete
+                                      ? (isSelected ? 'bg-emerald-300' : 'bg-emerald-500')
+                                      : (isSelected ? 'bg-white' : 'bg-cyan-500')
+                                  }`}
+                                  style={{ width: `${pct}%` }}
+                                />
+                              </div>
+
+                              {/* Bottom Info: Output vs Target & Percentage */}
+                              <div className="flex items-center justify-between text-[11px] pt-1">
+                                <span className={`font-semibold ${isSelected ? 'text-blue-100' : 'text-[var(--ec-muted)]'}`}>
+                                  Output: <strong className={`font-black ${isSelected ? 'text-white' : 'text-[var(--ec-foreground)]'}`}>{completed}</strong> / {target}
+                                </span>
+                                <span className={`font-mono font-black ${
+                                  isComplete
+                                    ? (isSelected ? 'text-emerald-300' : 'text-emerald-500')
+                                    : (isSelected ? 'text-cyan-100' : 'text-cyan-600 dark:text-cyan-400')
+                                }`}>
+                                  {pct}%
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Step 5: Size-Wise Production Entry Grid */}
                 <div className="space-y-3 pt-4 border-t border-[var(--ec-border)]">
@@ -1480,6 +1731,11 @@ export function ProductionPage() {
                       </label>
                       <p className="text-[11px] text-[var(--ec-muted)] mt-0.5">
                         Category: <strong className="text-[var(--ec-foreground)]">{activeCategoryConfig.label} ({activeCategoryConfig.rangeText})</strong>
+                        {isMultiProcessDept(selectedDepartment) && selectedProcess && (
+                          <span className="ml-2 font-bold text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/25">
+                            Stage: {selectedProcess}
+                          </span>
+                        )}
                       </p>
                     </div>
 
@@ -1585,10 +1841,20 @@ export function ProductionPage() {
                 {/* Submit Button */}
                 <button
                   type="submit"
-                  className="w-full py-3.5 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white font-black text-xs sm:text-sm tracking-wide shadow-lg shadow-cyan-500/25 transition transform active:scale-[0.99] flex items-center justify-center gap-2"
+                  disabled={isSubmitting || currentEntryQuantity <= 0}
+                  className="w-full py-3.5 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white font-black text-xs sm:text-sm tracking-wide shadow-lg shadow-cyan-500/25 transition transform active:scale-[0.99] flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
                 >
-                  <CheckCircle2 className="h-4 w-4 sm:h-5 sm:w-5" />
-                  <span>RECORD ENTRY ({currentEntryQuantity} {selectedOrder?.unit || defaultProductionUnit})</span>
+                  {isSubmitting ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>SAVING PRODUCTION ENTRY...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="h-4 w-4 sm:h-5 sm:w-5" />
+                      <span>RECORD ENTRY ({currentEntryQuantity} {selectedOrder?.unit || defaultProductionUnit})</span>
+                    </>
+                  )}
                 </button>
               </form>
             </div>
@@ -1619,10 +1885,7 @@ export function ProductionPage() {
 
                     <div className="space-y-2">
                       {availableDepartments.map((dept) => {
-                        const deptFlows = flows.filter(
-                          (f) => f.orderId === selectedOrder.id && f.department === dept
-                        );
-                        const totalProduced = deptFlows.reduce((sum, f) => sum + f.completed, 0);
+                        const { completed: totalProduced, processCount } = getDeptCompletion(dept);
                         const pct = Math.min(
                           100,
                           Math.round((totalProduced / (selectedOrder.quantity || 1)) * 100)
@@ -1631,7 +1894,14 @@ export function ProductionPage() {
                         return (
                           <div key={dept} className="space-y-1">
                             <div className="flex items-center justify-between text-xs font-semibold">
-                              <span>{dept}</span>
+                              <span className="flex items-center gap-1.5">
+                                <span>{dept}</span>
+                                {processCount > 1 && (
+                                  <span className="text-[9px] px-1 py-0.2 rounded bg-purple-500/15 text-purple-400 font-bold">
+                                    {processCount} stages
+                                  </span>
+                                )}
+                              </span>
                               <span className="text-cyan-400 font-mono font-bold text-[11px]">
                                 {totalProduced} / {selectedOrder.quantity} ({pct}%)
                               </span>
@@ -1811,7 +2081,30 @@ export function ProductionPage() {
                       {/* Department Progress Chips (Mobile: 2-cols, Desktop: 4-cols) */}
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-[var(--ec-border)]/60">
                         {depts.map((d) => {
-                          const total = orderFlows.filter((f) => f.department === d).reduce((s, f) => s + f.completed, 0);
+                          const isMulti = isMultiProcessDept(d);
+                          let total = 0;
+                          let stagesText = '';
+
+                          if (isMulti) {
+                            const dFlows = orderFlows.filter((f) => f.department === d);
+                            const key = d.toLowerCase().trim();
+                            const configuredStages = customProcesses[key] || [];
+                            const recordedProcesses = Array.from(new Set(dFlows.map((f) => f.processName).filter(Boolean))) as string[];
+                            const allStages = Array.from(new Set([...configuredStages, ...recordedProcesses]));
+
+                            if (allStages.length > 0) {
+                              const processTotals = allStages.map((proc) =>
+                                dFlows.filter((f) => f.processName === proc).reduce((s, f) => s + f.completed, 0)
+                              );
+                              total = Math.min(...processTotals);
+                              stagesText = `(${allStages.length} stages)`;
+                            } else {
+                              total = dFlows.reduce((s, f) => s + f.completed, 0);
+                            }
+                          } else {
+                            total = orderFlows.filter((f) => f.department === d).reduce((s, f) => s + f.completed, 0);
+                          }
+
                           const pct = Math.min(100, Math.round((total / (order.quantity || 1)) * 100));
                           return (
                             <div key={d} className="rounded-xl bg-[var(--ec-surface)] p-2 sm:p-2.5 text-xs border border-[var(--ec-border)]">
@@ -1823,7 +2116,7 @@ export function ProductionPage() {
                                 <div className="bg-cyan-400 h-full rounded-full" style={{ width: `${pct}%` }} />
                               </div>
                               <div className="text-[9px] sm:text-[10px] text-[var(--ec-muted)] mt-1.5 flex justify-between">
-                                <span>Done: {total}</span>
+                                <span>Done: {total} {stagesText}</span>
                                 <span>Target: {order.quantity}</span>
                               </div>
                             </div>
@@ -1877,6 +2170,127 @@ export function ProductionPage() {
           </div>
         )}
       </div>
+
+      {/* Add Custom Process Modal */}
+      {showAddProcessModal && (
+        <div
+          onClick={() => setShowAddProcessModal(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fadeIn"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative max-w-md w-full bg-[var(--ec-card)] border border-cyan-500/40 rounded-2xl overflow-hidden shadow-2xl p-5 space-y-4"
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--ec-border)]">
+              <span className="font-extrabold text-sm text-[var(--ec-foreground)] flex items-center gap-2">
+                <span>⚙️</span> Add Custom Stage for {selectedDepartment}
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowAddProcessModal(false)}
+                className="w-7 h-7 rounded-full bg-[var(--ec-surface)] hover:bg-red-500/20 text-[var(--ec-muted)] hover:text-red-400 text-xs font-bold transition flex items-center justify-center"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleAddCustomProcess} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-[var(--ec-muted)] mb-1.5">
+                  Stage / Process Name:
+                </label>
+                <input
+                  type="text"
+                  autoFocus
+                  value={newProcessName}
+                  onChange={(e) => setNewProcessName(e.target.value)}
+                  placeholder={`e.g. Screen Print, Gold Foil, Debossing...`}
+                  className="w-full rounded-xl border border-[var(--ec-border)] bg-[var(--ec-surface)] px-3.5 py-2.5 text-xs text-[var(--ec-foreground)] font-bold focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAddProcessModal(false)}
+                  className="px-4 py-2 rounded-xl border border-[var(--ec-border)] bg-[var(--ec-surface)] text-xs font-bold text-[var(--ec-muted)] hover:text-[var(--ec-foreground)] transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!newProcessName.trim()}
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white text-xs font-bold transition shadow-sm disabled:opacity-50"
+                >
+                  Add Stage
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit / Rename Process Modal */}
+      {editingProcess && (
+        <div
+          onClick={() => setEditingProcess(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fadeIn"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative max-w-md w-full bg-[var(--ec-card)] border border-cyan-500/40 rounded-2xl overflow-hidden shadow-2xl p-5 space-y-4"
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--ec-border)]">
+              <span className="font-extrabold text-sm text-[var(--ec-foreground)] flex items-center gap-2">
+                <Pencil className="h-4 w-4 text-cyan-400" /> Rename Stage for {selectedDepartment}
+              </span>
+              <button
+                type="button"
+                onClick={() => setEditingProcess(null)}
+                className="w-7 h-7 rounded-full bg-[var(--ec-surface)] hover:bg-red-500/20 text-[var(--ec-muted)] hover:text-red-400 text-xs font-bold transition flex items-center justify-center"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleRenameProcess} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-[var(--ec-muted)] mb-1.5">
+                  Stage Name:
+                </label>
+                <input
+                  type="text"
+                  autoFocus
+                  value={editingProcess.newName}
+                  onChange={(e) => setEditingProcess({ ...editingProcess, newName: e.target.value })}
+                  placeholder="Enter new stage name..."
+                  className="w-full rounded-xl border border-[var(--ec-border)] bg-[var(--ec-surface)] px-3.5 py-2.5 text-xs text-[var(--ec-foreground)] font-bold focus:outline-none focus:border-cyan-500"
+                />
+                <p className="text-[11px] text-[var(--ec-muted)] mt-1">
+                  Renaming will automatically update all existing production records under this stage name.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingProcess(null)}
+                  className="px-4 py-2 rounded-xl border border-[var(--ec-border)] bg-[var(--ec-surface)] text-xs font-bold text-[var(--ec-muted)] hover:text-[var(--ec-foreground)] transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!editingProcess.newName.trim()}
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white text-xs font-bold transition shadow-sm disabled:opacity-50"
+                >
+                  Save Changes
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Full-Image Lightbox Preview Modal */}
       {previewImage && (

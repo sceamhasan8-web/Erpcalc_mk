@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { erpService } from '@/services/erpService';
 import { useModal } from '@/context/ModalContext';
 import { useProductionUnit } from '@/lib/unitSettings';
@@ -45,6 +45,9 @@ export function GoodsStorePage() {
     status: 'Ready' as 'Ready' | 'Packed' | 'Reserved',
     orderId: '',
   });
+
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const isSubmittingRef = useRef<boolean>(false);
 
   // Refresh data when database updates
   useEffect(() => {
@@ -183,6 +186,8 @@ export function GoodsStorePage() {
 
   // Submit Receive Production Flow
   function submitReceiveProduction() {
+    if (isSubmittingRef.current || isSubmitting) return;
+
     const { order, quantity, sku, item, status, readyQty } = receiveModal;
     if (!order || quantity <= 0) return;
 
@@ -195,41 +200,52 @@ export function GoodsStorePage() {
       return;
     }
 
-    // Check if an entry with same SKU, orderId and status already exists to update it
-    const existing = items.find(
-      (fg) => fg.orderId === order.id && fg.sku === sku && fg.status === status
-    );
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
 
-    if (existing) {
-      erpService.updateFinishedGood(existing.id, {
-        quantity: existing.quantity + quantity,
+    try {
+      // Check if an entry with same SKU, orderId and status already exists to update it
+      const existing = items.find(
+        (fg) => fg.orderId === order.id && fg.sku === sku && fg.status === status
+      );
+
+      if (existing) {
+        erpService.updateFinishedGood(existing.id, {
+          quantity: existing.quantity + quantity,
+        });
+      } else {
+        erpService.createFinishedGood({
+          sku,
+          item,
+          quantity,
+          status,
+          orderId: order.id,
+        });
+      }
+
+      toast.success(`Successfully received ${quantity.toLocaleString()} ${order.unit || productionUnit} into Goods Store.`);
+      setReceiveModal({
+        open: false,
+        order: null,
+        readyQty: 0,
+        quantity: 0,
+        sku: '',
+        item: '',
+        status: 'Ready',
       });
-    } else {
-      erpService.createFinishedGood({
-        sku,
-        item,
-        quantity,
-        status,
-        orderId: order.id,
-      });
+      setItems([...erpService.getFinishedGoods()]);
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
     }
-
-    toast.success(`Successfully received ${quantity.toLocaleString()} ${order.unit || productionUnit} into Goods Store.`);
-    setReceiveModal({
-      open: false,
-      order: null,
-      readyQty: 0,
-      quantity: 0,
-      sku: '',
-      item: '',
-      status: 'Ready',
-    });
-    setItems([...erpService.getFinishedGoods()]);
   }
 
   // Submit Manual Custom Entry Form
   function submitManualEntry(e: React.FormEvent) {
     e.preventDefault();
+
+    if (isSubmittingRef.current || isSubmitting) return;
+
     const qty = Number(manualForm.quantity);
     if (!manualForm.sku.trim() || !manualForm.item.trim() || isNaN(qty) || qty <= 0) {
       showAlert({
@@ -240,37 +256,45 @@ export function GoodsStorePage() {
       return;
     }
 
-    // Check existing
-    const existing = items.find(
-      (fg) =>
-        fg.sku === manualForm.sku &&
-        fg.status === manualForm.status &&
-        (manualForm.orderId ? fg.orderId === manualForm.orderId : !fg.orderId)
-    );
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
 
-    if (existing) {
-      erpService.updateFinishedGood(existing.id, {
-        quantity: existing.quantity + qty,
+    try {
+      // Check existing
+      const existing = items.find(
+        (fg) =>
+          fg.sku === manualForm.sku &&
+          fg.status === manualForm.status &&
+          (manualForm.orderId ? fg.orderId === manualForm.orderId : !fg.orderId)
+      );
+
+      if (existing) {
+        erpService.updateFinishedGood(existing.id, {
+          quantity: existing.quantity + qty,
+        });
+      } else {
+        erpService.createFinishedGood({
+          sku: manualForm.sku,
+          item: manualForm.item,
+          quantity: qty,
+          status: manualForm.status,
+          orderId: manualForm.orderId || undefined,
+        });
+      }
+
+      toast.success(`Successfully entered ${qty.toLocaleString()} units of ${manualForm.item} manually.`);
+      setManualForm({
+        sku: '',
+        item: '',
+        quantity: '',
+        status: 'Ready',
+        orderId: '',
       });
-    } else {
-      erpService.createFinishedGood({
-        sku: manualForm.sku,
-        item: manualForm.item,
-        quantity: qty,
-        status: manualForm.status,
-        orderId: manualForm.orderId || undefined,
-      });
+      setItems([...erpService.getFinishedGoods()]);
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
     }
-
-    toast.success(`Successfully entered ${qty.toLocaleString()} units of ${manualForm.item} manually.`);
-    setManualForm({
-      sku: '',
-      item: '',
-      quantity: '',
-      status: 'Ready',
-      orderId: '',
-    });
-    setItems([...erpService.getFinishedGoods()]);
   }
 
   return (
@@ -657,9 +681,10 @@ export function GoodsStorePage() {
 
               <button
                 type="submit"
-                className="w-full sm:w-auto bg-[var(--ec-primary)] hover:opacity-90 text-white px-6 py-3 rounded-xl text-sm font-bold transition-opacity"
+                disabled={isSubmitting}
+                className="w-full sm:w-auto bg-[var(--ec-primary)] hover:opacity-90 text-white px-6 py-3 rounded-xl text-sm font-bold transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                ✓ Entry Stock
+                {isSubmitting ? 'Saving...' : '✓ Entry Stock'}
               </button>
 
             </form>
@@ -765,9 +790,10 @@ export function GoodsStorePage() {
               </button>
               <button
                 onClick={submitReceiveProduction}
-                className="flex-1 rounded-xl bg-[var(--ec-primary)] hover:opacity-90 text-white py-2.5 text-sm font-bold transition-opacity"
+                disabled={isSubmitting}
+                className="flex-1 rounded-xl bg-[var(--ec-primary)] hover:opacity-90 text-white py-2.5 text-sm font-bold transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Save Receipt
+                {isSubmitting ? 'Saving Receipt...' : 'Save Receipt'}
               </button>
             </div>
 

@@ -71,6 +71,7 @@ export interface ProductionFlow {
   id: ID;
   orderId: ID;
   department: string;
+  processName?: string;
   completed: number;
   pending: number;
   rejected: number;
@@ -89,9 +90,15 @@ export interface WarehouseStock {
   item: string;
   quantity: number;
   unit?: string;
+  unitPrice?: number;
+  totalPrice?: number;
   reorderLevel?: number;
   location?: string;
   category?: string;
+  orderId?: ID;
+  orderNumber?: string;
+  buyerName?: string;
+  articleName?: string;
 }
 
 export interface MaterialReceival {
@@ -100,9 +107,14 @@ export interface MaterialReceival {
   item: string;
   quantity: number;
   unit?: string;
+  unitPrice?: number;
+  totalPrice?: number;
   source: 'Buyer' | 'Own Purchase';
   buyerId?: ID;
   buyerName?: string;
+  orderId?: ID;
+  orderNumber?: string;
+  articleName?: string;
   location?: string;
   category?: string;
   receivedAt?: string; // ISO date

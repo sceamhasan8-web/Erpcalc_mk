@@ -83,26 +83,6 @@ export class MockRepository {
     hydrateList(STORAGE_KEYS.materialReceivals, materialReceivals);
     hydrateList(STORAGE_KEYS.departments, departments);
     hydrateList(STORAGE_KEYS.articles, articles);
-
-    // Normalize departments: Split "Lasting & DIP" into separate "Lasting" and "DIP"
-    const lastingDipIdx = departments.findIndex((d) => d.name === 'Lasting & DIP');
-    if (lastingDipIdx !== -1) {
-      const oldDept = departments[lastingDipIdx];
-      departments.splice(
-        lastingDipIdx,
-        1,
-        { ...oldDept, id: 'd11', name: 'Lasting' },
-        { ...oldDept, id: 'd14', name: 'DIP' }
-      );
-      this.persistDepartments();
-    } else {
-      if (!departments.some((d) => d.name === 'Lasting')) {
-        departments.push({ id: 'd11', name: 'Lasting', efficiency: 85, capacity: 180, manpower: 14, workingHours: 8, productionCapability: 16000, productionCapabilityPerHour: 2000, activeOrders: 5, completedToday: 60 });
-      }
-      if (!departments.some((d) => d.name === 'DIP')) {
-        departments.push({ id: 'd14', name: 'DIP', efficiency: 83, capacity: 170, manpower: 12, workingHours: 8, productionCapability: 16000, productionCapabilityPerHour: 2000, activeOrders: 4, completedToday: 55 });
-      }
-    }
   }
 
   private persist(key: string, data: any) {

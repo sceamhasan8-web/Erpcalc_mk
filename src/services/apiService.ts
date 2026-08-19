@@ -160,6 +160,10 @@ export const apiService = {
       await fetchJson<BuyerOrder>('/api/orders', { method: 'POST', body: JSON.stringify(fullOrder) }, fullOrder);
     } catch (e) {}
 
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('erp:buyerOrdersUpdated'));
+    }
+
     return fullOrder;
   },
   updateBuyerOrder: async (id: string, updates: Partial<BuyerOrder>) => {
@@ -170,6 +174,11 @@ export const apiService = {
     try {
       await fetchJson<BuyerOrder>('/api/orders', { method: 'PATCH', body: JSON.stringify({ id, updates }) }, { id, ...updates } as BuyerOrder);
     } catch (e) {}
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('erp:buyerOrdersUpdated'));
+    }
+
     return { id, ...updates } as BuyerOrder;
   },
   deleteBuyerOrder: async (id: string) => {
@@ -187,6 +196,10 @@ export const apiService = {
     try {
       await fetchJson<{ success: boolean }>('/api/orders', { method: 'DELETE', body: JSON.stringify({ id }) }, { success: true });
     } catch (e) {}
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('erp:buyerOrdersUpdated'));
+    }
 
     return { success: true };
   },

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiService } from '@/services/apiService';
 import { firebaseService } from '@/services/firebaseService';
@@ -91,6 +91,8 @@ export function OrdersPage() {
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<{ src: string; title: string } | null>(null);
   const [openDeptItemIds, setOpenDeptItemIds] = useState<Set<string>>(new Set());
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const isSubmittingRef = useRef<boolean>(false);
 
   function toggleOpenDeptItem(itemId: string) {
     setOpenDeptItemIds((prev) => {
@@ -306,12 +308,19 @@ export function OrdersPage() {
       ...prev,
       items: prev.items.map((it) => {
         if (it.id !== itemId) return it;
-        const current = it.requiredDepartments || [];
+        const current = (it.requiredDepartments || []).filter((d) => departments.includes(d));
         const updated = current.includes(deptName)
           ? current.filter((d) => d !== deptName)
           : [...current, deptName];
         return { ...it, requiredDepartments: updated };
       }),
+    }));
+  }
+
+  function handleClearItemDepartments(itemId: string) {
+    setForm((prev) => ({
+      ...prev,
+      items: prev.items.map((it) => (it.id === itemId ? { ...it, requiredDepartments: [] } : it)),
     }));
   }
 
@@ -330,6 +339,7 @@ export function OrdersPage() {
   }
 
   function loadOrderIntoForm(order: BuyerOrder) {
+    const activeOrderDepts = (order.requiredDepartments || []).filter((d) => departments.length === 0 || departments.includes(d));
     let loadedItems: typeof form.items = [];
 
     if (order.items && order.items.length > 0) {
@@ -340,6 +350,13 @@ export function OrdersPage() {
             sizeMap[Number(size)] = String(qty);
           });
         }
+
+        const activeItemDepts = (item.requiredDepartments || []).filter((d) => departments.length === 0 || departments.includes(d));
+
+        // Only treat as specific item-departments if explicitly customized differently from order
+        const hasSpecificCustom = activeItemDepts.length > 0 &&
+          JSON.stringify([...activeItemDepts].sort()) !== JSON.stringify([...activeOrderDepts].sort());
+
         return {
           id: item.id || `item_${idx}_${Date.now()}`,
           articleId: item.articleId || '',
@@ -349,7 +366,7 @@ export function OrdersPage() {
           sizeBreakdown: sizeMap,
           quantity: String(item.quantity),
           image: item.image,
-          requiredDepartments: item.requiredDepartments || order.requiredDepartments || [],
+          requiredDepartments: hasSpecificCustom ? activeItemDepts : [],
         };
       });
     } else {
@@ -370,7 +387,7 @@ export function OrdersPage() {
           sizeBreakdown: sizeMap,
           quantity: String(order.quantity),
           image: order.image,
-          requiredDepartments: order.requiredDepartments || [],
+          requiredDepartments: [],
         },
       ];
     }
@@ -382,7 +399,7 @@ export function OrdersPage() {
       deliveryDate: order.deliveryDate ?? '',
       priority: order.priority ?? 'Medium',
       notes: order.notes ?? '',
-      requiredDepartments: order.requiredDepartments ?? [],
+      requiredDepartments: activeOrderDepts,
       items: loadedItems.length > 0 ? loadedItems : [createEmptyItem()],
     });
     setEditingOrderId(order.id);
@@ -390,6 +407,11 @@ export function OrdersPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+
+    if (isSubmittingRef.current || isSubmitting) {
+      return;
+    }
+
     if (!form.buyerId) {
       showAlert({
         title: 'Missing Buyer',
@@ -410,34 +432,45 @@ export function OrdersPage() {
 
     // Validate each item
     for (let i = 0; i < form.items.length; i++) {
-      const item = form.items[i];
-      if (!item.articleText.trim()) {
+      const it = form.items[i];
+      if (!it.articleText.trim()) {
         showAlert({
-          title: `Missing Article in Item #${i + 1}`,
-          message: `Please specify an article name or number for Item #${i + 1}.`,
+          title: 'Missing Article',
+          message: `Please select or enter an article for Item #${i + 1}.`,
           type: 'warning',
         });
         return;
       }
-      if (!item.color.trim()) {
+      if (!it.color.trim()) {
         showAlert({
-          title: `Missing Color in Item #${i + 1}`,
-          message: `Please specify a color for Item #${i + 1}.`,
+          title: 'Missing Color',
+          message: `Please choose or enter a color for Item #${i + 1} (${it.articleText || 'Item'}).`,
           type: 'warning',
         });
         return;
       }
-      if (!item.quantity || Number(item.quantity) <= 0) {
+      const qtyNum = Number(it.quantity);
+      if (!qtyNum || qtyNum <= 0) {
         showAlert({
-          title: `Invalid Quantity in Item #${i + 1}`,
-          message: `Please enter size quantities or total quantity greater than 0 for Item #${i + 1}.`,
+          title: 'Invalid Quantity',
+          message: `Please provide a valid quantity (> 0) for Item #${i + 1} (${it.articleText || 'Item'}).`,
           type: 'warning',
         });
         return;
       }
     }
 
+    if (totalOrderQuantity <= 0) {
+      showAlert({
+        title: 'Zero Order Quantity',
+        message: 'Order total quantity must be greater than 0.',
+        type: 'warning',
+      });
+      return;
+    }
+
     const buyer = buyers.find((b) => b.id === form.buyerId) as Buyer | undefined;
+    const activeFormOrderDepts = form.requiredDepartments.filter((d) => departments.length === 0 || departments.includes(d));
 
     const processedItems = form.items.map((item) => {
       const matched = articles.find(
@@ -455,6 +488,10 @@ export function OrdersPage() {
         }
       });
 
+      const activeItemDepts = (item.requiredDepartments || []).filter((d) => departments.length === 0 || departments.includes(d));
+      const hasSpecificCustom = activeItemDepts.length > 0 &&
+        JSON.stringify([...activeItemDepts].sort()) !== JSON.stringify([...activeFormOrderDepts].sort());
+
       return {
         id: item.id,
         articleId: matched?.id || '',
@@ -464,7 +501,7 @@ export function OrdersPage() {
         sizeBreakdown: Object.keys(numericSizeBreakdown).length > 0 ? numericSizeBreakdown : undefined,
         quantity: Number(item.quantity),
         image: item.image,
-        requiredDepartments: item.requiredDepartments && item.requiredDepartments.length > 0 ? item.requiredDepartments : undefined,
+        requiredDepartments: hasSpecificCustom ? activeItemDepts : undefined,
       };
     });
 
@@ -488,44 +525,39 @@ export function OrdersPage() {
       deliveryDate: form.deliveryDate || undefined,
       priority: form.priority,
       notes: form.notes || undefined,
-      requiredDepartments: form.requiredDepartments && form.requiredDepartments.length > 0 ? form.requiredDepartments : undefined,
+      requiredDepartments: activeFormOrderDepts,
     };
 
-    if (editingOrderId) {
-      try {
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
+
+    try {
+      if (editingOrderId) {
         const updated = await apiService.updateBuyerOrder(editingOrderId, orderPayload);
         if (updated) {
           setBuyerOrders((s) => s.map((o) => (o.id === updated.id ? updated : o)));
           toast.success('Order updated successfully!');
         }
-      } catch (error) {
-        console.error('Failed to update order', error);
-        showAlert({
-          title: 'Update Failed',
-          message: 'Unable to save order changes. Please try again.',
-          type: 'error',
+      } else {
+        const generatedNumber = form.orderNumber.trim() || `BO-${Date.now().toString().slice(-6)}`;
+        const created = await apiService.createBuyerOrder({
+          orderNumber: generatedNumber,
+          ...orderPayload,
         });
+        setBuyerOrders((s) => [created, ...s.filter((o) => o.id !== created.id && o.orderNumber !== created.orderNumber)]);
+        toast.success(`Order ${created.orderNumber} created with ${processedItems.length} item(s)!`);
       }
       resetForm();
-      return;
-    }
-
-    try {
-      const generatedNumber = form.orderNumber.trim() || `BO-${Date.now().toString().slice(-6)}`;
-      const created = await apiService.createBuyerOrder({
-        orderNumber: generatedNumber,
-        ...orderPayload,
-      });
-      setBuyerOrders((s) => [created, ...s.filter((o) => o.id !== created.id && o.orderNumber !== created.orderNumber)]);
-      toast.success(`Order ${created.orderNumber} created with ${processedItems.length} item(s)!`);
-      resetForm();
     } catch (error) {
-      console.error('Failed to create order', error);
+      console.error('Failed to submit order', error);
       showAlert({
-        title: 'Creation Failed',
-        message: 'Unable to create order. Please check your data and try again.',
+        title: editingOrderId ? 'Update Failed' : 'Order Failed',
+        message: editingOrderId ? 'Unable to save order changes. Please try again.' : 'Unable to create order. Please check inputs and try again.',
         type: 'error',
       });
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
     }
   }
 
@@ -1058,7 +1090,8 @@ export function OrdersPage() {
                       {/* Optional Collapsible Per-Item Required Departments Dropdown */}
                       {(() => {
                         const isOpen = openDeptItemIds.has(item.id);
-                        const selectedCount = (item.requiredDepartments || []).length;
+                        const validItemDepts = (item.requiredDepartments || []).filter((d) => departments.includes(d));
+                        const hasCustom = validItemDepts.length > 0;
                         return (
                           <div className="rounded-xl border border-[var(--ec-border)] bg-[var(--ec-card)]/40 overflow-hidden transition">
                             <button
@@ -1073,27 +1106,44 @@ export function OrdersPage() {
                                 <span className="text-[10px] text-[var(--ec-muted)] bg-[var(--ec-surface)] border border-[var(--ec-border)] px-1.5 py-0.5 rounded">
                                   Optional
                                 </span>
-                                {selectedCount > 0 && (
+                                {hasCustom ? (
                                   <span className="text-[10px] font-bold bg-cyan-500/15 text-cyan-400 border border-cyan-500/25 px-2 py-0.5 rounded-full">
-                                    {selectedCount} selected
+                                    {validItemDepts.length} custom selected
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+                                    ✓ Follows Order Required ({form.requiredDepartments.length > 0 ? form.requiredDepartments.length : 'All'})
                                   </span>
                                 )}
                               </div>
 
                               <span className="text-xs text-cyan-400 font-semibold flex items-center gap-1 flex-shrink-0">
-                                {isOpen ? 'Close ▲' : 'Set Departments ▼'}
+                                {isOpen ? 'Close ▲' : 'Set Specific Departments ▼'}
                               </span>
                             </button>
 
                             {isOpen && (
                               <div className="p-3 sm:p-3.5 border-t border-[var(--ec-border)] bg-[var(--ec-surface)]/50 space-y-2.5 animate-fadeIn">
-                                <p className="text-[11px] text-[var(--ec-muted)]">
-                                  Select the specific production departments required for this article variant:
-                                </p>
+                                <div className="flex items-center justify-between gap-2 flex-wrap">
+                                  <p className="text-[11px] text-[var(--ec-muted)]">
+                                    {hasCustom
+                                      ? 'Custom departments selected for this article variant:'
+                                      : 'No custom departments selected. This item will automatically use all departments selected at the order level below.'}
+                                  </p>
+                                  {hasCustom && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleClearItemDepartments(item.id)}
+                                      className="text-[10px] text-rose-400 hover:text-rose-300 font-semibold underline"
+                                    >
+                                      Reset to Order Default
+                                    </button>
+                                  )}
+                                </div>
                                 
                                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5">
                                   {departments.map((dept) => {
-                                    const isChecked = (item.requiredDepartments || []).includes(dept);
+                                    const isChecked = validItemDepts.includes(dept);
                                     return (
                                       <button
                                         key={dept}
@@ -1224,9 +1274,14 @@ export function OrdersPage() {
             ) : null}
             <button
               type="submit"
-              className="w-full sm:w-auto rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 hover:opacity-90 px-8 py-3 text-sm font-bold text-white shadow-lg shadow-cyan-500/25 transition"
+              disabled={isSubmitting}
+              className="w-full sm:w-auto rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 hover:opacity-90 px-8 py-3 text-sm font-bold text-white shadow-lg shadow-cyan-500/25 transition disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {editingOrderId ? 'Save Order Changes' : `Receive Order (${totalOrderQuantity} ${form.unit})`}
+              {isSubmitting
+                ? 'Saving Order...'
+                : editingOrderId
+                ? 'Save Order Changes'
+                : `Receive Order (${totalOrderQuantity} ${form.unit})`}
             </button>
           </div>
         </form>

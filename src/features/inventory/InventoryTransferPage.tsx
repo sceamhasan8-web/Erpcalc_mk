@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { AlertCircle, ArrowRightLeft, Boxes, CheckCircle2 } from 'lucide-react';
 import { erpService } from '@/services/erpService';
 import { useMaterialUnit } from '@/lib/unitSettings';
@@ -13,6 +13,8 @@ export function InventoryTransferPage() {
   const [toSection, setToSection] = useState('PD');
   const [quantity, setQuantity] = useState('10');
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const isSubmittingRef = useRef<boolean>(false);
 
   useEffect(() => {
     function handleUpdate() {
@@ -42,6 +44,8 @@ export function InventoryTransferPage() {
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
+
+    if (isSubmittingRef.current || isSubmitting) return;
 
     if (!selectedItem) {
       setFeedback({ type: 'error', text: 'Select an inventory item before transferring.' });
@@ -73,23 +77,31 @@ export function InventoryTransferPage() {
       return;
     }
 
-    const result = erpService.transferInventory({
-      itemId: selectedItem.id,
-      fromSection,
-      toSection,
-      quantity: parsedQuantity,
-    });
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
 
-    if (!result.ok) {
-      setFeedback({ type: 'error', text: result.message ?? 'Transfer could not be completed.' });
-      return;
+    try {
+      const result = erpService.transferInventory({
+        itemId: selectedItem.id,
+        fromSection,
+        toSection,
+        quantity: parsedQuantity,
+      });
+
+      if (!result.ok) {
+        setFeedback({ type: 'error', text: result.message ?? 'Transfer could not be completed.' });
+        return;
+      }
+
+      setStocks(erpService.getWarehouseStocks());
+      setFeedback({
+        type: 'success',
+        text: `Transferred ${parsedQuantity} ${selectedItem.unit || materialUnit} of ${selectedItem.item} from ${fromSection} to ${toSection}.`,
+      });
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
     }
-
-    setStocks(erpService.getWarehouseStocks());
-    setFeedback({
-      type: 'success',
-      text: `Transferred ${parsedQuantity} ${selectedItem.unit || materialUnit} of ${selectedItem.item} from ${fromSection} to ${toSection}.`,
-    });
   };
 
   return (
@@ -173,9 +185,10 @@ export function InventoryTransferPage() {
 
           <button
             type="submit"
-            className="mt-5 rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-400"
+            disabled={isSubmitting}
+            className="mt-5 rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Save transfer
+            {isSubmitting ? 'Transferring...' : 'Save transfer'}
           </button>
         </form>
 

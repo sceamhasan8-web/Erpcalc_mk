@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useState, type FormEvent } from 'react';
+import { useMemo, useState, useRef, type FormEvent } from 'react';
 import { AlertCircle, CheckCircle2, PackageCheck } from 'lucide-react';
 import { erpService } from '@/services/erpService';
 import { useMaterialUnit } from '@/lib/unitSettings';
@@ -17,11 +17,15 @@ export function GoodsReceivePage() {
   const [notes, setNotes] = useState('');
   const [receivals, setReceivals] = useState(initialReceivals);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const isSubmittingRef = useRef<boolean>(false);
 
   const latestReceivals = useMemo(() => receivals.slice(0, 6), [receivals]);
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
+
+    if (isSubmittingRef.current || isSubmitting) return;
 
     const parsedQuantity = Number(quantity);
     if (!item.trim()) {
@@ -34,26 +38,34 @@ export function GoodsReceivePage() {
       return;
     }
 
-    const result = erpService.receiveGoods({
-      item: item.trim(),
-      quantity: parsedQuantity,
-      unit,
-      section,
-      source,
-      buyerName: buyerName.trim() || undefined,
-      notes: notes.trim() || undefined,
-    });
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
 
-    if (!result.ok) {
-      setFeedback({ type: 'error', text: result.message ?? 'Goods receive could not be completed.' });
-      return;
+    try {
+      const result = erpService.receiveGoods({
+        item: item.trim(),
+        quantity: parsedQuantity,
+        unit,
+        section,
+        source,
+        buyerName: buyerName.trim() || undefined,
+        notes: notes.trim() || undefined,
+      });
+
+      if (!result.ok) {
+        setFeedback({ type: 'error', text: result.message ?? 'Goods receive could not be completed.' });
+        return;
+      }
+
+      setReceivals(erpService.getMaterialReceivals());
+      setFeedback({
+        type: 'success',
+        text: `Received ${parsedQuantity} ${unit} of ${item.trim()} into ${section}.`,
+      });
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
     }
-
-    setReceivals(erpService.getMaterialReceivals());
-    setFeedback({
-      type: 'success',
-      text: `Received ${parsedQuantity} ${unit} of ${item.trim()} into ${section}.`,
-    });
   };
 
   return (
@@ -160,9 +172,10 @@ export function GoodsReceivePage() {
 
           <button
             type="submit"
-            className="mt-5 rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-400"
+            disabled={isSubmitting}
+            className="mt-5 rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Save goods receive
+            {isSubmitting ? 'Saving...' : 'Save goods receive'}
           </button>
         </form>
 

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import Link from 'next/link';
 import { apiService } from '@/services/apiService';
 import { firebaseService } from '@/services/firebaseService';
@@ -26,6 +26,8 @@ export function BuyersPage() {
     rating: 4.5,
   });
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const isSubmittingRef = useRef<boolean>(false);
 
   useEffect(() => {
     async function loadData() {
@@ -62,6 +64,11 @@ export function BuyersPage() {
 
   const handleAddBuyer = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (isSubmittingRef.current || isSubmitting) {
+      return;
+    }
+
     if (!formData.name) {
       showAlert({ title: 'Missing Name', message: 'Please enter a buyer name.', type: 'warning' });
       return;
@@ -74,6 +81,9 @@ export function BuyersPage() {
       showAlert({ title: 'Missing Email', message: 'Please enter a valid email address.', type: 'warning' });
       return;
     }
+
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
 
     try {
       const newBuyer = await apiService.createBuyer({
@@ -92,6 +102,9 @@ export function BuyersPage() {
     } catch (error) {
       console.error('Failed to create buyer', error);
       showAlert({ title: 'Save Failed', message: 'Unable to save buyer. Please try again.', type: 'error' });
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
@@ -275,8 +288,12 @@ export function BuyersPage() {
                 >
                   Cancel
                 </button>
-                <button type="submit" className="rounded-lg bg-cyan-600 hover:bg-cyan-700 px-4 py-2 text-sm font-medium text-white transition-colors">
-                  Create Buyer
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="rounded-lg bg-cyan-600 hover:bg-cyan-700 px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isSubmitting ? 'Creating Buyer...' : 'Create Buyer'}
                 </button>
               </div>
             </form>
