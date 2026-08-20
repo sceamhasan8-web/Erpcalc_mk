@@ -1,1590 +1,1466 @@
 "use client";
 
-import { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { erpService } from '@/services/erpService';
-import type { Department, ProductionFlow, BuyerOrder } from '@/types';
+import { apiService } from '@/services/apiService';
+import { firebaseService } from '@/services/firebaseService';
+import { useModal } from '@/context/ModalContext';
+import { useProductionUnit } from '@/lib/unitSettings';
+import type { Department, ProductionFlow, BuyerOrder, OrderProductionPlan, SectionPlanTarget } from '@/types';
+import {
+  Calendar,
+  Layers,
+  TrendingUp,
+  Clock,
+  CheckCircle2,
+  AlertCircle,
+  Target,
+  Pencil,
+  PlusCircle,
+  Sparkles,
+  Sliders,
+  Filter,
+  Search,
+  ArrowRight,
+  BarChart3,
+  CalendarDays,
+  Flame,
+  AlertTriangle,
+  RefreshCw,
+  Zap,
+  Users,
+  ChevronRight,
+  Check,
+  Building2,
+  ArrowUpRight,
+  SlidersHorizontal,
+  ChevronDown
+} from 'lucide-react';
 
 const STANDARD_WORKING_HOURS = 8;
+const DEFAULT_WORKING_DAYS_PER_WEEK = 6;
 
-interface SimOrder {
-  id: string;
-  orderNumber: string;
-  quantity: number;
-  rate: number;
-  style: string;
+// Helper to get week start and end date
+function getWeekRange(date = new Date()) {
+  const d = new Date(date);
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Monday
+  const monday = new Date(d.setDate(diff));
+  monday.setHours(0, 0, 0, 0);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  sunday.setHours(23, 59, 59, 999);
+  return { monday, sunday };
 }
 
-interface SimAlloc {
-  orderId: string;
-  orderNumber: string;
-  type: 'regular' | 'overtime';
-  hours: number;
+// Helper to get month start and end date
+function getMonthRange(date = new Date()) {
+  const start = new Date(date.getFullYear(), date.getMonth(), 1, 0, 0, 0, 0);
+  const end = new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
+  return { start, end };
 }
 
-interface SimDay {
-  dayNumber: number;
-  allocs: SimAlloc[];
-  regularTotal: number;
-  overtimeTotal: number;
-}
+export default function PlanningPage() {
+  const defaultProductionUnit = useProductionUnit();
+  const { showAlert, toast } = useModal();
 
-interface SimOrderResult {
-  id: string;
-  orderNumber: string;
-  quantity: number;
-  rate: number;
-  reqHours: number;
-  regularHours: number;
-  overtimeHours: number;
-  startDay: number;
-  startHour: number;
-  endDay: number;
-  endHour: number;
-}
+  const [loading, setLoading] = useState(true);
+  const [buyerOrders, setBuyerOrders] = useState<BuyerOrder[]>([]);
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [productionFlows, setProductionFlows] = useState<ProductionFlow[]>([]);
+  const [plans, setPlans] = useState<OrderProductionPlan[]>([]);
 
-interface SimulationResult {
-  orders: SimOrderResult[];
-  days: SimDay[];
-  totalDays: number;
-  totalRegularHours: number;
-  totalOvertimeHours: number;
-  totalHours: number;
-}
+  // Selected view tab: 'order-plans' | 'matrix' | 'simulator'
+  const [activeTab, setActiveTab] = useState<'order-plans' | 'matrix' | 'simulator'>('order-plans');
 
-function runSimulation(ordersList: SimOrder[], regHoursPerDay = 8, maxHoursPerDay = 12): SimulationResult {
-  const orderResults: SimOrderResult[] = [];
-  const days: SimDay[] = [];
-  
-  let currentDay = 1;
-  let currentHour = 0; // cumulative hours worked today, 0 to maxHoursPerDay
-  
-  ordersList.forEach((order) => {
-    const reqHours = order.quantity / (order.rate || 1);
-    let remaining = reqHours;
-    
-    let allocatedReg = 0;
-    let allocatedOt = 0;
-    
-    const startDay = currentDay;
-    const startHour = currentHour;
-    
-    while (remaining > 0.001) {
-      let dayObj = days.find(d => d.dayNumber === currentDay);
-      if (!dayObj) {
-        dayObj = { dayNumber: currentDay, allocs: [], regularTotal: 0, overtimeTotal: 0 };
-        days.push(dayObj);
-      }
-      
-      const spaceInDay = maxHoursPerDay - currentHour;
-      if (spaceInDay <= 0.001) {
-        currentDay++;
-        currentHour = 0;
-        continue;
-      }
-      
-      if (currentHour < regHoursPerDay) {
-        const regSpace = regHoursPerDay - currentHour;
-        const fill = Math.min(remaining, regSpace);
-        
-        dayObj.allocs.push({
-          orderId: order.id,
-          orderNumber: order.orderNumber,
-          type: 'regular',
-          hours: fill
-        });
-        dayObj.regularTotal += fill;
-        
-        allocatedReg += fill;
-        remaining -= fill;
-        currentHour += fill;
-      } else {
-        const fill = Math.min(remaining, spaceInDay);
-        
-        dayObj.allocs.push({
-          orderId: order.id,
-          orderNumber: order.orderNumber,
-          type: 'overtime',
-          hours: fill
-        });
-        dayObj.overtimeTotal += fill;
-        
-        allocatedOt += fill;
-        remaining -= fill;
-        currentHour += fill;
+  // Filter and Search
+  const [searchQuery, setSearchQuery] = useState('');
+  const [matrixSearchQuery, setMatrixSearchQuery] = useState('');
+  const [selectedOrderId, setSelectedOrderId] = useState<string>('');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [targetHorizonFilter, setTargetHorizonFilter] = useState<'daily' | 'weekly' | 'monthly'>('daily');
+
+  // Plan Edit Modal state
+  const [editingPlanOrder, setEditingPlanOrder] = useState<BuyerOrder | null>(null);
+  const [editSections, setEditSections] = useState<Record<string, SectionPlanTarget>>({});
+  const [autoDistributeDays, setAutoDistributeDays] = useState<number>(10);
+  const [activeEditDept, setActiveEditDept] = useState<string>('');
+  const [isSavingPlan, setIsSavingPlan] = useState(false);
+
+  // Load and subscribe data
+  useEffect(() => {
+    async function loadData() {
+      try {
+        setLoading(true);
+        const [ordersData, flowsData, deptsData, plansData] = await Promise.all([
+          apiService.getBuyerOrders(),
+          apiService.getProductionFlows(),
+          apiService.getDepartments(),
+          apiService.getProductionPlans(),
+        ]);
+        setBuyerOrders(ordersData);
+        setProductionFlows(flowsData);
+        setDepartments(deptsData.filter((d) => d.name.toLowerCase() !== 'warehouse'));
+        setPlans(plansData);
+
+        if (ordersData.length > 0 && !selectedOrderId) {
+          setSelectedOrderId(ordersData[0].id);
+        }
+      } catch (e) {
+        console.error('Failed to load planning data:', e);
+      } finally {
+        setLoading(false);
       }
     }
-    
-    orderResults.push({
-      id: order.id,
-      orderNumber: order.orderNumber,
-      quantity: order.quantity,
-      rate: order.rate,
-      reqHours: reqHours,
-      regularHours: allocatedReg,
-      overtimeHours: allocatedOt,
-      startDay,
-      startHour,
-      endDay: currentDay,
-      endHour: currentHour
+    loadData();
+
+    // Firebase real-time subscriptions
+    const unsubOrders = firebaseService.subscribeOrders((live) => {
+      if (live && Array.isArray(live)) setBuyerOrders(live);
     });
-  });
-  
-  // Clean up float rounding for display
-  days.forEach(d => {
-    d.regularTotal = Number(d.regularTotal.toFixed(2));
-    d.overtimeTotal = Number(d.overtimeTotal.toFixed(2));
-    d.allocs.forEach(a => {
-      a.hours = Number(a.hours.toFixed(2));
+    const unsubFlows = firebaseService.subscribeProductionFlows((live) => {
+      if (live && Array.isArray(live)) setProductionFlows(live);
     });
-  });
-  
-  orderResults.forEach(o => {
-    o.reqHours = Number(o.reqHours.toFixed(2));
-    o.regularHours = Number(o.regularHours.toFixed(2));
-    o.overtimeHours = Number(o.overtimeHours.toFixed(2));
-    o.startHour = Number(o.startHour.toFixed(2));
-    o.endHour = Number(o.endHour.toFixed(2));
-  });
+    const unsubDepts = firebaseService.subscribeDepartments((live) => {
+      if (live && Array.isArray(live)) {
+        setDepartments(live.filter((d) => d.name.toLowerCase() !== 'warehouse'));
+      }
+    });
+    const unsubPlans = firebaseService.subscribeProductionPlans((live) => {
+      if (live && Array.isArray(live)) setPlans(live);
+    });
 
-  const totalRegularHours = orderResults.reduce((sum, o) => sum + o.regularHours, 0);
-  const totalOvertimeHours = orderResults.reduce((sum, o) => sum + o.overtimeHours, 0);
-  const totalDays = days.length;
-
-  return {
-    orders: orderResults,
-    days,
-    totalDays,
-    totalRegularHours: Number(totalRegularHours.toFixed(2)),
-    totalOvertimeHours: Number(totalOvertimeHours.toFixed(2)),
-    totalHours: Number((totalRegularHours + totalOvertimeHours).toFixed(2))
-  };
-}
-
-export default function Page() {
-  const [departmentVersion, setDepartmentVersion] = useState(0);
-  const [activeTab, setActiveTab] = useState<'standard' | 'multi-order'>('standard');
-  const [simTargetDeadline, setSimTargetDeadline] = useState<number>(2); // in days
-  const [simOrders, setSimOrders] = useState<SimOrder[]>([
-    { id: 'sim-1', orderNumber: 'ORD-001', quantity: 2000, rate: 200, style: 'Classic Runner' },
-    { id: 'sim-2', orderNumber: 'ORD-002', quantity: 300, rate: 30, style: 'Urban Flex' },
-    { id: 'sim-3', orderNumber: 'ORD-003', quantity: 1500, rate: 150, style: 'Elite Comfort' },
-  ]);
-  const [productionFlows, setProductionFlows] = useState<ProductionFlow[]>(erpService.getProductionFlows());
-  const [buyerOrders, setBuyerOrders] = useState<BuyerOrder[]>(erpService.getBuyerOrders());
-  const [newSimOrder, setNewSimOrder] = useState({ orderId: '', customNo: '', customQty: '1000', customRate: '100', customStyle: 'Sport Max' });
-  const departments = useMemo(() => erpService.getDepartments(), [departmentVersion]);
-
-  const [selectedOrderId, setSelectedOrderId] = useState<string>('');
-  const [orderPlans, setOrderPlans] = useState<Record<string, { date: string; days: string; hoursPerDay: string; manpower: string; hourlyProduction?: string }>>({});
-  const [customization, setCustomization] = useState({
-    workingHours: 8,
-    workers: 12,
-    machines: 6,
-    overtimeHours: 0,
-    shiftCount: 1,
-    capacityMultiplier: 1,
-  });
-  const [selectedDepartmentName, setSelectedDepartmentName] = useState('Sewing');
-  const [activeOrderPlanDepartment, setActiveOrderPlanDepartment] = useState<string>('');
-  const [importedCapacities, setImportedCapacities] = useState<Record<string, number>>({});
-  const [importMessage, setImportMessage] = useState('Capacity data is ready to import from Department Management.');
-
-  useEffect(() => {
-    const handleDepartmentsUpdated = () => setDepartmentVersion((value) => value + 1);
-    const handleDataUpdated = () => {
+    const handleSync = () => {
+      setPlans(erpService.getProductionPlans());
       setProductionFlows(erpService.getProductionFlows());
       setBuyerOrders(erpService.getBuyerOrders());
     };
+    window.addEventListener('erp:productionPlansUpdated', handleSync);
+    window.addEventListener('erp:productionFlowsUpdated', handleSync);
+    window.addEventListener('erp:buyerOrdersUpdated', handleSync);
 
-    if (typeof window !== 'undefined') {
-      window.addEventListener('erp:departmentsUpdated', handleDepartmentsUpdated);
-      window.addEventListener('erp:buyerOrdersUpdated', handleDataUpdated);
-      window.addEventListener('erp:productionFlowsUpdated', handleDataUpdated);
-      return () => {
-        window.removeEventListener('erp:departmentsUpdated', handleDepartmentsUpdated);
-        window.removeEventListener('erp:buyerOrdersUpdated', handleDataUpdated);
-        window.removeEventListener('erp:productionFlowsUpdated', handleDataUpdated);
-      };
-    }
+    return () => {
+      unsubOrders();
+      unsubFlows();
+      unsubDepts();
+      unsubPlans();
+      window.removeEventListener('erp:productionPlansUpdated', handleSync);
+      window.removeEventListener('erp:productionFlowsUpdated', handleSync);
+      window.removeEventListener('erp:buyerOrdersUpdated', handleSync);
+    };
   }, []);
 
-  useEffect(() => {
-    const nextImported = Object.fromEntries(
-      departments.map((department) => {
-        const fallbackHourly = department.productionCapabilityPerHour ?? (department.productionCapability && department.workingHours ? Math.round(department.productionCapability / department.workingHours) : 0);
-        return [department.name, fallbackHourly || 0];
-      }),
-    ) as Record<string, number>;
+  // Deduplicate orders
+  const uniqueOrders = useMemo(() => {
+    const seen = new Set<string>();
+    const list: BuyerOrder[] = [];
+    for (const o of buyerOrders) {
+      const key = o.id || o.orderNumber;
+      if (key && !seen.has(key) && (!o.orderNumber || !seen.has(o.orderNumber))) {
+        seen.add(key);
+        if (o.orderNumber) seen.add(o.orderNumber);
+        list.push(o);
+      }
+    }
+    return list;
+  }, [buyerOrders]);
 
-    setImportedCapacities((prev) => {
-      const same = JSON.stringify(prev) === JSON.stringify(nextImported);
-      return same ? prev : nextImported;
-    });
+  // Available valid department names
+  const validDeptNames = useMemo(() => {
+    return departments.map((d) => d.name);
   }, [departments]);
 
-  const departmentOrderLoad = useMemo(() => {
-    const load: Record<string, { quantity: number; orders: number }> = {};
+  // Helper to retrieve or generate a production plan for an order
+  const getOrderPlan = (order: BuyerOrder): OrderProductionPlan => {
+    const existing = plans.find((p) => p.orderId === order.id || p.orderNumber === order.orderNumber);
+    const reqDepts = order.requiredDepartments && order.requiredDepartments.length > 0
+      ? order.requiredDepartments
+      : validDeptNames;
 
-    buyerOrders.forEach((order) => {
-      order.requiredDepartments?.forEach((departmentName) => {
-        const current = load[departmentName] ?? { quantity: 0, orders: 0 };
-        load[departmentName] = {
-          quantity: current.quantity + order.quantity,
-          orders: current.orders + 1,
+    const sections: Record<string, SectionPlanTarget> = {};
+
+    reqDepts.forEach((dept) => {
+      if (existing?.sections?.[dept]) {
+        sections[dept] = existing.sections[dept];
+      } else {
+        const totalQty = order.quantity || 1000;
+        const estDays = Math.max(1, Math.min(20, Math.ceil(totalQty / 500)));
+        const daily = Math.ceil(totalQty / estDays);
+        const weekly = daily * DEFAULT_WORKING_DAYS_PER_WEEK;
+        const monthly = totalQty;
+
+        const deptObj = departments.find((d) => d.name === dept);
+        sections[dept] = {
+          department: dept,
+          dailyTarget: daily,
+          weeklyTarget: weekly,
+          monthlyTarget: monthly,
+          totalTarget: totalQty,
+          startDate: order.createdAt ? order.createdAt.slice(0, 10) : new Date().toISOString().slice(0, 10),
+          targetDeliveryDate: order.deliveryDate ? order.deliveryDate.slice(0, 10) : undefined,
+          manpower: deptObj?.manpower || 12,
+          workingHours: deptObj?.workingHours || STANDARD_WORKING_HOURS,
         };
+      }
+    });
+
+    return {
+      id: existing?.id || `plan_${order.id}`,
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      buyerName: order.buyerName,
+      articleName: order.articleName,
+      totalQuantity: order.quantity,
+      unit: order.unit || defaultProductionUnit,
+      startDate: order.createdAt ? order.createdAt.slice(0, 10) : undefined,
+      targetDeliveryDate: order.deliveryDate ? order.deliveryDate.slice(0, 10) : undefined,
+      sections,
+      status: existing?.status || 'In Progress',
+      updatedAt: existing?.updatedAt || new Date().toISOString(),
+    };
+  };
+
+  // Currently selected order
+  const selectedOrder = useMemo(() => {
+    return uniqueOrders.find((o) => o.id === selectedOrderId) || uniqueOrders[0] || null;
+  }, [uniqueOrders, selectedOrderId]);
+
+  // Selected order's plan
+  const selectedOrderPlan = useMemo(() => {
+    if (!selectedOrder) return null;
+    return getOrderPlan(selectedOrder);
+  }, [selectedOrder, plans, validDeptNames, departments, defaultProductionUnit]);
+
+  // Filtered orders list
+  const filteredOrders = useMemo(() => {
+    let list = uniqueOrders;
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter((o) =>
+        o.orderNumber?.toLowerCase().includes(q) ||
+        o.buyerName?.toLowerCase().includes(q) ||
+        o.articleName?.toLowerCase().includes(q)
+      );
+    }
+
+    if (statusFilter !== 'all') {
+      list = list.filter((o) => o.status === statusFilter);
+    }
+
+    return list;
+  }, [uniqueOrders, searchQuery, statusFilter]);
+
+  // Filtered orders specifically for the Cross-Section Matrix view
+  const filteredMatrixOrders = useMemo(() => {
+    if (!matrixSearchQuery.trim()) return uniqueOrders;
+    const q = matrixSearchQuery.toLowerCase();
+    return uniqueOrders.filter((o) => {
+      const orderMatch = o.orderNumber?.toLowerCase().includes(q);
+      const buyerMatch = o.buyerName?.toLowerCase().includes(q);
+      const articleMatch = o.articleName?.toLowerCase().includes(q) ||
+        (o.items && o.items.some((it) => it.articleName?.toLowerCase().includes(q)));
+      return Boolean(orderMatch || buyerMatch || articleMatch);
+    });
+  }, [uniqueOrders, matrixSearchQuery]);
+
+  // Helper to compute actual production output for a specific order and department across horizons
+  const getOrderDeptMetrics = (orderId: string, deptName: string, sectionPlan?: SectionPlanTarget) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const { monday, sunday } = getWeekRange(new Date());
+    const { start: monthStart, end: monthEnd } = getMonthRange(new Date());
+
+    const orderFlows = productionFlows.filter((f) => f.orderId === orderId && f.department === deptName);
+
+    const totalActual = orderFlows.reduce((sum, f) => sum + (f.completed || 0), 0);
+
+    const todayActual = orderFlows
+      .filter((f) => {
+        if (!f.updatedAt) return false;
+        const d = new Date(f.updatedAt);
+        d.setHours(0, 0, 0, 0);
+        return d.getTime() === today.getTime();
+      })
+      .reduce((sum, f) => sum + (f.completed || 0), 0);
+
+    const weekActual = orderFlows
+      .filter((f) => {
+        if (!f.updatedAt) return false;
+        const d = new Date(f.updatedAt);
+        return d.getTime() >= monday.getTime() && d.getTime() <= sunday.getTime();
+      })
+      .reduce((sum, f) => sum + (f.completed || 0), 0);
+
+    const monthActual = orderFlows
+      .filter((f) => {
+        if (!f.updatedAt) return false;
+        const d = new Date(f.updatedAt);
+        return d.getTime() >= monthStart.getTime() && d.getTime() <= monthEnd.getTime();
+      })
+      .reduce((sum, f) => sum + (f.completed || 0), 0);
+
+    const dailyTarget = sectionPlan?.dailyTarget || 0;
+    const weeklyTarget = sectionPlan?.weeklyTarget || (dailyTarget * DEFAULT_WORKING_DAYS_PER_WEEK);
+    const monthlyTarget = sectionPlan?.monthlyTarget || sectionPlan?.totalTarget || 0;
+    const totalTarget = sectionPlan?.totalTarget || 0;
+
+    const todayDue = Math.max(0, dailyTarget - todayActual);
+    const weekDue = Math.max(0, weeklyTarget - weekActual);
+    const monthDue = Math.max(0, monthlyTarget - monthActual);
+    const totalDue = Math.max(0, totalTarget - totalActual);
+
+    const dailyPct = dailyTarget > 0 ? Math.min(100, Math.round((todayActual / dailyTarget) * 100)) : 0;
+    const weeklyPct = weeklyTarget > 0 ? Math.min(100, Math.round((weekActual / weeklyTarget) * 100)) : 0;
+    const totalPct = totalTarget > 0 ? Math.min(100, Math.round((totalActual / totalTarget) * 100)) : 0;
+
+    let status: 'Completed' | 'Ahead' | 'On Track' | 'Behind Due' | 'Not Started' = 'On Track';
+    if (totalTarget > 0 && totalActual >= totalTarget) {
+      status = 'Completed';
+    } else if (totalActual === 0 && todayActual === 0) {
+      status = 'Not Started';
+    } else if (todayActual >= dailyTarget && dailyTarget > 0) {
+      status = 'Ahead';
+    } else if (todayDue > 0) {
+      status = 'Behind Due';
+    }
+
+    return {
+      totalActual,
+      todayActual,
+      weekActual,
+      monthActual,
+      dailyTarget,
+      weeklyTarget,
+      monthlyTarget,
+      totalTarget,
+      todayDue,
+      weekDue,
+      monthDue,
+      totalDue,
+      dailyPct,
+      weeklyPct,
+      totalPct,
+      status,
+    };
+  };
+
+  // Executive Factory-Wide KPI Summary
+  const factorySummary = useMemo(() => {
+    let plannedDailyTotal = 0;
+    let plannedWeeklyTotal = 0;
+    let plannedMonthlyTotal = 0;
+    let actualTodayTotal = 0;
+    let actualWeekTotal = 0;
+    let totalFactoryDue = 0;
+    let behindSectionsCount = 0;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const { monday, sunday } = getWeekRange(new Date());
+
+    uniqueOrders.forEach((order) => {
+      if (order.status === 'Completed') return;
+      const plan = getOrderPlan(order);
+      Object.entries(plan.sections).forEach(([dept, sTarget]) => {
+        plannedDailyTotal += sTarget.dailyTarget || 0;
+        plannedWeeklyTotal += sTarget.weeklyTarget || (sTarget.dailyTarget * DEFAULT_WORKING_DAYS_PER_WEEK);
+        plannedMonthlyTotal += sTarget.monthlyTarget || sTarget.totalTarget || 0;
+
+        const metrics = getOrderDeptMetrics(order.id, dept, sTarget);
+        if (metrics.todayDue > 0) behindSectionsCount++;
+        totalFactoryDue += metrics.totalDue;
       });
     });
 
-    return load;
-  }, [buyerOrders]);
+    actualTodayTotal = productionFlows
+      .filter((f) => {
+        if (!f.updatedAt) return false;
+        const d = new Date(f.updatedAt);
+        d.setHours(0, 0, 0, 0);
+        return d.getTime() === today.getTime();
+      })
+      .reduce((sum, f) => sum + (f.completed || 0), 0);
 
-  const selectedOrder = useMemo(
-    () => buyerOrders.find((order) => order.id === selectedOrderId) ?? null,
-    [buyerOrders, selectedOrderId],
-  );
+    actualWeekTotal = productionFlows
+      .filter((f) => {
+        if (!f.updatedAt) return false;
+        const d = new Date(f.updatedAt);
+        return d.getTime() >= monday.getTime() && d.getTime() <= sunday.getTime();
+      })
+      .reduce((sum, f) => sum + (f.completed || 0), 0);
 
-  useEffect(() => {
-    const sel = buyerOrders.find((order) => order.id === selectedOrderId) ?? null;
-    if (!sel) {
-      setOrderPlans((prev) => (Object.keys(prev).length === 0 ? prev : {}));
-      setActiveOrderPlanDepartment('');
-      return;
-    }
+    const todayFillRate = plannedDailyTotal > 0 ? Math.min(100, Math.round((actualTodayTotal / plannedDailyTotal) * 100)) : 0;
+    const weekFillRate = plannedWeeklyTotal > 0 ? Math.min(100, Math.round((actualWeekTotal / plannedWeeklyTotal) * 100)) : 0;
 
-    const next: Record<string, { date: string; days: string; hoursPerDay: string; manpower: string; hourlyProduction?: string }> = {};
-    sel.requiredDepartments?.forEach((departmentName) => {
-      const department = departments.find((item) => item.name === departmentName);
-      const defaultHourly = department?.productionCapabilityPerHour ?? (department?.productionCapability && department?.workingHours ? department.productionCapability / department.workingHours : 0);
-      next[departmentName] = {
-        date: sel.deliveryDate ? new Date(sel.deliveryDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
-        days: '1',
-        hoursPerDay: String(department?.workingHours ?? STANDARD_WORKING_HOURS),
-        manpower: String(department?.manpower ?? 0),
-        hourlyProduction: String(defaultHourly ?? 0),
-      };
-    });
+    return {
+      plannedDailyTotal,
+      plannedWeeklyTotal,
+      plannedMonthlyTotal,
+      actualTodayTotal,
+      actualWeekTotal,
+      todayFillRate,
+      weekFillRate,
+      totalFactoryDue,
+      behindSectionsCount,
+      activeOrdersCount: uniqueOrders.filter((o) => o.status !== 'Completed').length,
+    };
+  }, [uniqueOrders, plans, productionFlows, validDeptNames, departments]);
 
-    setOrderPlans((prev) => {
-      try {
-        const a = JSON.stringify(prev || {});
-        const b = JSON.stringify(next || {});
-        if (a === b) return prev;
-      } catch (e) {
-        // fallback to always set if stringify fails
-      }
+  // Open Plan Edit Modal
+  const handleOpenEditPlan = (order: BuyerOrder, targetDept?: string) => {
+    const currentPlan = getOrderPlan(order);
+    setEditingPlanOrder(order);
+    setEditSections(JSON.parse(JSON.stringify(currentPlan.sections)));
+    const firstDept = targetDept || Object.keys(currentPlan.sections)[0] || 'Cutting';
+    setActiveEditDept(firstDept);
+
+    const totalQty = order.quantity || 1000;
+    const currentDaily = currentPlan.sections[firstDept]?.dailyTarget || 500;
+    const estDays = Math.max(1, Math.ceil(totalQty / (currentDaily || 1)));
+    setAutoDistributeDays(estDays);
+  };
+
+  // Auto-distribute targets across working days
+  const handleApplyAutoDistribute = () => {
+    if (!editingPlanOrder || autoDistributeDays <= 0) return;
+    const totalQty = editingPlanOrder.quantity || 1000;
+    const daily = Math.ceil(totalQty / autoDistributeDays);
+    const weekly = daily * DEFAULT_WORKING_DAYS_PER_WEEK;
+    const monthly = totalQty;
+
+    setEditSections((prev) => {
+      const next = { ...prev };
+      Object.keys(next).forEach((dept) => {
+        next[dept] = {
+          ...next[dept],
+          dailyTarget: daily,
+          weeklyTarget: weekly,
+          monthlyTarget: monthly,
+          totalTarget: totalQty,
+        };
+      });
       return next;
     });
 
-    const requiredDepartments = sel.requiredDepartments ?? [];
-    if (requiredDepartments.length > 0 && !requiredDepartments.includes(selectedDepartmentName)) {
-      setSelectedDepartmentName(requiredDepartments[0]);
+    toast.success(`Distributed: ${daily} ${editingPlanOrder.unit || defaultProductionUnit}/day across all sections!`);
+  };
+
+  // Save modified plan
+  const handleSavePlan = async () => {
+    if (!editingPlanOrder) return;
+    setIsSavingPlan(true);
+
+    try {
+      const planPayload: OrderProductionPlan = {
+        id: `plan_${editingPlanOrder.id}`,
+        orderId: editingPlanOrder.id,
+        orderNumber: editingPlanOrder.orderNumber,
+        buyerName: editingPlanOrder.buyerName,
+        articleName: editingPlanOrder.articleName,
+        totalQuantity: editingPlanOrder.quantity,
+        unit: editingPlanOrder.unit || defaultProductionUnit,
+        startDate: editingPlanOrder.createdAt ? editingPlanOrder.createdAt.slice(0, 10) : undefined,
+        targetDeliveryDate: editingPlanOrder.deliveryDate ? editingPlanOrder.deliveryDate.slice(0, 10) : undefined,
+        sections: editSections,
+        status: 'In Progress',
+        updatedAt: new Date().toISOString(),
+      };
+
+      await apiService.saveProductionPlan(planPayload);
+
+      setPlans((prev) => {
+        const idx = prev.findIndex((p) => p.orderId === editingPlanOrder.id);
+        if (idx !== -1) {
+          const next = [...prev];
+          next[idx] = planPayload;
+          return next;
+        }
+        return [planPayload, ...prev];
+      });
+
+      toast.success(`Production plan for Order #${editingPlanOrder.orderNumber} updated successfully!`);
+      setEditingPlanOrder(null);
+    } catch (e) {
+      console.error('Failed to save plan:', e);
+      showAlert({ title: 'Save Failed', message: 'Could not save production plan. Please try again.', type: 'error' });
+    } finally {
+      setIsSavingPlan(false);
     }
-  }, [selectedOrderId, departments, buyerOrders, selectedDepartmentName]);
-
-  useEffect(() => {
-    if (!selectedOrder) {
-      setActiveOrderPlanDepartment('');
-      return;
-    }
-
-    const requiredDepartments = selectedOrder.requiredDepartments ?? [];
-    if (requiredDepartments.length === 0) {
-      setActiveOrderPlanDepartment('');
-      return;
-    }
-
-    const preferredDepartment = requiredDepartments.find((departmentName) => departmentName === selectedDepartmentName) ?? requiredDepartments[0];
-    setActiveOrderPlanDepartment(preferredDepartment);
-
-    const department = departments.find((item) => item.name === preferredDepartment);
-    if (!department) return;
-
-    const defaultHourly = department.productionCapabilityPerHour ?? (department.productionCapability && department.workingHours ? department.productionCapability / department.workingHours : 0);
-    setOrderPlans((prev) => ({
-      ...prev,
-      [preferredDepartment]: {
-        ...(prev[preferredDepartment] || {}),
-        date: prev[preferredDepartment]?.date || (selectedOrder?.deliveryDate ? new Date(selectedOrder.deliveryDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10)),
-        days: prev[preferredDepartment]?.days || '1',
-        hoursPerDay: prev[preferredDepartment]?.hoursPerDay || String(department.workingHours ?? STANDARD_WORKING_HOURS),
-        manpower: prev[preferredDepartment]?.manpower || String(department.manpower ?? 0),
-        hourlyProduction: prev[preferredDepartment]?.hourlyProduction || String(defaultHourly ?? 0),
-      },
-    }));
-  }, [selectedOrder, selectedDepartmentName, departments]);
-
-  const [departmentPlans, setDepartmentPlans] = useState(
-    () =>
-      Object.fromEntries(
-        departments.map((department) => [
-          department.id,
-          {
-            plannedHours: String(department.workingHours ?? STANDARD_WORKING_HOURS),
-            plannedManpower: String(department.manpower ?? 0),
-          },
-        ]),
-      ) as Record<string, { plannedHours: string; plannedManpower: string }>,
-  );
-
-  useEffect(() => {
-    const targetDepartment = departments.find((department) => department.name === selectedDepartmentName);
-    if (!targetDepartment) return;
-
-    setCustomization((prev) => ({
-      ...prev,
-      workingHours: targetDepartment.workingHours ?? prev.workingHours,
-      workers: targetDepartment.manpower ?? prev.workers,
-      machines: Math.max(1, Math.round((targetDepartment.manpower ?? prev.workers ?? 12) / 2)),
-    }));
-
-    setDepartmentPlans((prev) => ({
-      ...prev,
-      [targetDepartment.id]: {
-        plannedHours: String(targetDepartment.workingHours ?? STANDARD_WORKING_HOURS),
-        plannedManpower: String(targetDepartment.manpower ?? 0),
-      },
-    }));
-  }, [departments, selectedDepartmentName]);
-
-  const upcomingDeadline = useMemo(() => {
-    const now = new Date();
-    const cutoff = new Date(now);
-    cutoff.setDate(cutoff.getDate() + 7);
-    return cutoff;
-  }, []);
-
-  const planningRows = useMemo(() => {
-    const cutoff = upcomingDeadline.getTime();
-
-    return departments.map((department) => {
-      const departmentFlows = productionFlows.filter((flow) => flow.department === department.name);
-      const backlog = departmentFlows.reduce((sum, flow) => sum + flow.pending, 0);
-      const activeOrderCount = buyerOrders.filter((order) => order.requiredDepartments?.includes(department.name) && order.status !== 'Completed').length;
-      const urgentOrders = buyerOrders.filter((order) => {
-        if (!order.deliveryDate) return false;
-        if (!order.requiredDepartments?.includes(department.name)) return false;
-        if (order.status === 'Completed') return false;
-        const deliveryTime = new Date(order.deliveryDate).getTime();
-        return deliveryTime <= cutoff;
-      }).length;
-
-      const workingHours = department.workingHours ?? STANDARD_WORKING_HOURS;
-      const currentHourly =
-        department.productionCapabilityPerHour ??
-        (department.productionCapability && workingHours ? department.productionCapability / workingHours : 0);
-      const standardOutput = Math.round(currentHourly * workingHours);
-      const planned = departmentPlans[department.id] || {
-        plannedHours: String(workingHours),
-        plannedManpower: String(department.manpower ?? 0),
-      };
-      const plannedHours = Number(planned.plannedHours) || workingHours;
-      const plannedManpower = Number(planned.plannedManpower) || department.manpower || 0;
-      const plannedOutput = Math.round(currentHourly * plannedHours);
-      const extraHoursNeeded = currentHourly > 0 ? Math.max(0, backlog / currentHourly - workingHours) : 0;
-      const workPressure = urgentOrders > 0 || backlog > standardOutput ? 'High' : backlog > 0 ? 'Medium' : 'Low';
-      const orderLoad = departmentOrderLoad[department.name] ?? { quantity: 0, orders: 0 };
-
-      return {
-        department,
-        backlog,
-        activeOrderCount,
-        urgentOrders,
-        workingHours,
-        currentHourly,
-        standardOutput,
-        plannedHours,
-        plannedManpower,
-        plannedOutput,
-        extraHoursNeeded,
-        workPressure,
-        orderLoadQuantity: orderLoad.quantity,
-        orderLoadCount: orderLoad.orders,
-      };
-    });
-  }, [buyerOrders, departmentPlans, departments, productionFlows, upcomingDeadline]);
-
-  const companySummary = useMemo(() => {
-    const totalManpower = departments.reduce((sum, dept) => sum + (dept.manpower ?? 0), 0);
-    const totalCapacity = departments.reduce((sum, dept) => sum + (dept.productionCapability ?? 0), 0);
-    const avgEfficiency = departments.length ? Math.round(departments.reduce((sum, dept) => sum + (dept.efficiency ?? 0), 0) / departments.length) : 0;
-    const urgentOrders = buyerOrders.filter((order) => {
-      if (!order.deliveryDate) return false;
-      if (order.status === 'Completed') return false;
-      const deliveryTime = new Date(order.deliveryDate).getTime();
-      return deliveryTime <= upcomingDeadline.getTime();
-    }).length;
-    const totalBacklog = productionFlows.reduce((sum, flow) => sum + flow.pending, 0);
-
-    return {
-      totalDepartments: departments.length,
-      totalManpower,
-      totalCapacity,
-      avgEfficiency,
-      urgentOrders,
-      totalBacklog,
-    };
-  }, [buyerOrders, departments, productionFlows, upcomingDeadline]);
-
-  const selectedDepartment = useMemo(() => {
-    return departments.find((department) => department.name === selectedDepartmentName) ?? departments.find((department) => department.name === 'Sewing') ?? departments[0] ?? null;
-  }, [departments, selectedDepartmentName]);
-
-  const selectedOrderQuantity = selectedOrder?.quantity ?? 20000;
-  const importedHourlyCapacity = selectedDepartment ? importedCapacities[selectedDepartment.name] ?? selectedDepartment.productionCapabilityPerHour ?? 0 : 0;
-  const baseWorkers = selectedDepartment?.manpower ?? 12;
-  const baseMachines = Math.max(1, Math.round((selectedDepartment?.manpower ?? 12) / 2));
-  const workerMultiplier = Math.max(0.5, customization.workers / Math.max(1, baseWorkers));
-  const machineMultiplier = Math.max(0.5, customization.machines / Math.max(1, baseMachines));
-  const overtimeMultiplier = 1 + customization.overtimeHours / Math.max(1, customization.workingHours);
-  const shiftMultiplier = Math.max(1, customization.shiftCount);
-  const adjustedHourlyCapacity = Math.round(importedHourlyCapacity * workerMultiplier * machineMultiplier * customization.capacityMultiplier * overtimeMultiplier * shiftMultiplier);
-  const adjustedDailyCapacity = Math.round(adjustedHourlyCapacity * customization.workingHours);
-  const pendingPairs = Math.max(0, selectedOrderQuantity - adjustedDailyCapacity);
-  const completionPercentage = selectedOrderQuantity > 0 ? Math.min(100, Math.round((adjustedDailyCapacity / selectedOrderQuantity) * 100)) : 0;
-  const estimatedDays = adjustedDailyCapacity > 0 ? Math.max(1, Math.ceil(selectedOrderQuantity / adjustedDailyCapacity)) : 0;
-  const completionStatus = completionPercentage >= 100 ? 'On Time' : completionPercentage >= 80 ? 'Watch' : 'Delay Risk';
-  const shipmentStatus = completionPercentage >= 100 ? 'On Time' : 'At Risk';
-
-  const scenarioComparison = useMemo(() => {
-    const hoursList = [8, 10, 12];
-    return hoursList.map((hours, index) => {
-      const capacity = Math.round(
-        importedHourlyCapacity * workerMultiplier * machineMultiplier * customization.capacityMultiplier * (1 + customization.overtimeHours / Math.max(1, hours)) * shiftMultiplier * hours,
-      );
-      const completion = selectedOrderQuantity > 0 ? Math.min(100, Math.round((capacity / selectedOrderQuantity) * 100)) : 0;
-      const status = completion >= 100 ? 'Safe' : completion >= 80 ? 'Watch' : 'Delay Risk';
-      return {
-        name: ['Scenario A', 'Scenario B', 'Scenario C'][index],
-        hours,
-        capacity,
-        completion,
-        extraCapacity: Math.max(0, capacity - adjustedDailyCapacity),
-        status,
-      };
-    });
-  }, [adjustedDailyCapacity, customization.capacityMultiplier, customization.overtimeHours, customization.shiftCount, importedHourlyCapacity, machineMultiplier, selectedOrderQuantity, shiftMultiplier, workerMultiplier]);
-
-  const recommendationOptions = useMemo(() => {
-    const extraWorkingHoursImpact = Math.max(0, 10000 - adjustedDailyCapacity);
-    const workerImpact = Math.max(2000, Math.round(adjustedHourlyCapacity * 2));
-    const overtimeImpact = Math.max(1800, Math.round(adjustedHourlyCapacity * 2));
-    const shiftImpact = Math.max(2500, Math.round(adjustedHourlyCapacity * 1.5));
-    const outsourceImpact = 3000;
-
-    return [
-      { title: 'Increase Working Hours to 10', detail: 'Raise the daily schedule to absorb more demand without adding permanent headcount.', impact: extraWorkingHoursImpact, cost: 1 },
-      { title: `Add 5 Workers in ${selectedDepartment?.name ?? 'Sewing'}`, detail: 'Improve bottleneck throughput in the most constrained department.', impact: workerImpact, cost: 2 },
-      { title: 'Run 2 Hours Overtime', detail: 'Use short-term overtime to recover urgent load with minimal setup change.', impact: overtimeImpact, cost: 2 },
-      { title: 'Add 1 Extra Shift', detail: 'Spread the workload across an additional shift to protect delivery dates.', impact: shiftImpact, cost: 3 },
-      { title: 'Outsource 3,000 Pairs', detail: 'Bridge the gap quickly while internal capacity catches up.', impact: outsourceImpact, cost: 4 },
-    ];
-  }, [adjustedDailyCapacity, adjustedHourlyCapacity, selectedDepartment?.name]);
-
-  const bestRecommendation = useMemo(() => {
-    return recommendationOptions.reduce((best, current) => {
-      const bestRatio = best.impact / Math.max(1, best.cost);
-      const currentRatio = current.impact / Math.max(1, current.cost);
-      return currentRatio > bestRatio ? current : best;
-    }, recommendationOptions[0]);
-  }, [recommendationOptions]);
-
-  function handlePlanChange(departmentId: string, key: 'plannedHours' | 'plannedManpower', value: string) {
-    setDepartmentPlans((prev) => ({
-      ...prev,
-      [departmentId]: {
-        ...prev[departmentId],
-        [key]: value,
-      },
-    }));
-  }
-
-  function handleOrderPlanChange(
-    departmentName: string,
-    key: 'date' | 'days' | 'hoursPerDay' | 'manpower' | 'hourlyProduction',
-    value: string,
-  ) {
-    // allow empty string so users can clear inputs (avoid forced 0)
-    setOrderPlans((prev) => ({
-      ...prev,
-      [departmentName]: {
-        ...(prev[departmentName] || {}),
-        [key]: value,
-      },
-    }));
-  }
-
-  function handleCustomizationChange(key: keyof typeof customization, value: string | number) {
-    setCustomization((prev) => ({ ...prev, [key]: value }));
-  }
-
-  function handleImportDepartmentCapacity() {
-    const nextImported = Object.fromEntries(
-      departments.map((department) => {
-        const fallbackHourly = department.productionCapabilityPerHour ?? (department.productionCapability && department.workingHours ? Math.round(department.productionCapability / department.workingHours) : 0);
-        return [department.name, fallbackHourly || 0];
-      }),
-    ) as Record<string, number>;
-
-    setImportedCapacities(nextImported);
-    setImportMessage(`Imported ${departments.length} department capacities from Department Management.`);
-  }
-
-  const selectedOrderPlanRows = useMemo(() => {
-    if (!selectedOrder) return [];
-
-    return (selectedOrder.requiredDepartments ?? []).map((departmentName, index) => {
-      const department = departments.find((item) => item.name === departmentName);
-      const plan = orderPlans[departmentName] ?? {
-        days: '0',
-        hoursPerDay: String(department?.workingHours ?? STANDARD_WORKING_HOURS),
-        manpower: String(department?.manpower ?? 0),
-        hourlyProduction: String(
-          department?.productionCapabilityPerHour ?? (department?.productionCapability && department?.workingHours ? department.productionCapability / department.workingHours : 0),
-        ),
-      };
-      const days = Number(plan.days) || 0;
-      const hoursPerDay = Number(plan.hoursPerDay) || 0;
-      const totalHours = days * hoursPerDay;
-      const defaultHourly = department?.productionCapabilityPerHour ?? (department?.productionCapability && department?.workingHours ? department.productionCapability / department.workingHours : 0);
-      const hourlyProduction = Number(plan.hourlyProduction ?? String(defaultHourly)) || defaultHourly || 0;
-      const currentHourly = department?.productionCapabilityPerHour ?? (department?.productionCapability && department?.workingHours ? department.productionCapability / department.workingHours : 0);
-      const projectedOutput = Math.round(hourlyProduction * totalHours);
-      const outputPerDay = Math.round(hourlyProduction * hoursPerDay);
-      const departmentFlows = productionFlows.filter(
-        (flow) => flow.orderId === selectedOrder.id && flow.department === departmentName,
-      );
-      const actualCompleted = departmentFlows.reduce((sum, flow) => sum + flow.completed, 0);
-      const actualRemaining = Math.max(0, selectedOrder.quantity - actualCompleted);
-
-      const isActivePlan = departmentName === activeOrderPlanDepartment;
-
-      return {
-        departmentName,
-        department,
-        plan,
-        index: index + 1,
-        isActivePlan,
-        days,
-        hoursPerDay,
-        totalHours,
-        currentHourly,
-        projectedOutput,
-        outputPerDay,
-        requiredQuantity: selectedOrder.quantity,
-        actualCompleted,
-        actualRemaining,
-        remaining: selectedOrder.quantity - projectedOutput,
-      };
-    });
-  }, [selectedOrder, orderPlans, departments, activeOrderPlanDepartment]);
-
-  const simResultA = useMemo(() => runSimulation(simOrders, 8, 8), [simOrders]);
-  const simResultB = useMemo(() => runSimulation(simOrders, 8, 10), [simOrders]);
-  const simResultC = useMemo(() => runSimulation(simOrders, 8, 12), [simOrders]);
-
-  function handleUpdateSimOrderRate(id: string, rate: number) {
-    setSimOrders(prev => prev.map(o => o.id === id ? { ...o, rate: Math.max(1, rate) } : o));
-  }
-
-  function handleUpdateSimOrderQty(id: string, qty: number) {
-    setSimOrders(prev => prev.map(o => o.id === id ? { ...o, quantity: Math.max(0, qty) } : o));
-  }
-
-  function handleUpdateSimOrderField(id: string, key: 'orderNumber' | 'style', value: string) {
-    setSimOrders(prev => prev.map(o => o.id === id ? { ...o, [key]: value } : o));
-  }
-
-  function handleDeleteSimOrder(id: string) {
-    setSimOrders(prev => prev.filter(o => o.id !== id));
-  }
-
-  function handleResetSimOrders() {
-    setSimOrders([
-      { id: 'sim-1', orderNumber: 'ORD-001', quantity: 2000, rate: 200, style: 'Classic Runner' },
-      { id: 'sim-2', orderNumber: 'ORD-002', quantity: 300, rate: 30, style: 'Urban Flex' },
-      { id: 'sim-3', orderNumber: 'ORD-003', quantity: 1500, rate: 150, style: 'Elite Comfort' },
-    ]);
-  }
-
-  function handleAddCustomSimOrder() {
-    const id = `sim-${Date.now()}`;
-    const orderNo = newSimOrder.customNo.trim() || `ORD-SIM-${simOrders.length + 1}`;
-    const qty = Number(newSimOrder.customQty) || 1000;
-    const rate = Number(newSimOrder.customRate) || 100;
-    const style = newSimOrder.customStyle.trim() || 'Custom Style';
-    setSimOrders(prev => [...prev, { id, orderNumber: orderNo, quantity: qty, rate, style }]);
-    setNewSimOrder(prev => ({ ...prev, customNo: '', customQty: '1000', customRate: '100' }));
-  }
-
-  function handleAddSystemSimOrder() {
-    const orderId = newSimOrder.orderId;
-    if (!orderId) return;
-    const systemOrder = buyerOrders.find(o => o.id === orderId);
-    if (!systemOrder) return;
-    
-    const id = `sim-sys-${orderId}`;
-    setSimOrders(prev => {
-      if (prev.some(o => o.id === id)) return prev;
-      return [...prev, {
-        id,
-        orderNumber: systemOrder.orderNumber,
-        quantity: systemOrder.quantity,
-        rate: 100,
-        style: systemOrder.articleName || 'Standard'
-      }];
-    });
-    setNewSimOrder(prev => ({ ...prev, orderId: '' }));
-  }
+  };
 
   return (
-    <div className="w-full space-y-6 text-[var(--ec-foreground)]">
-      <div className="rounded-2xl sm:rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-card)] p-4 sm:p-6 lg:p-8">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h1 className="text-xl sm:text-2xl font-bold text-[var(--ec-foreground)]">Company Planning</h1>
-            <p className="mt-1 max-w-2xl text-xs sm:text-sm text-[var(--ec-muted)]">
-              Monitor department workload, estimate overtime hours, and manage manpower to meet delivery dates.
+    <div className="w-full space-y-4 sm:space-y-6 pb-24 max-w-7xl mx-auto">
+      {/* ------------------------------------------------------------- */}
+      {/* COMPACT & RESPONSIVE HEADER BANNER */}
+      {/* ------------------------------------------------------------- */}
+      <div className="relative overflow-hidden rounded-2xl sm:rounded-3xl border border-cyan-500/30 bg-gradient-to-br from-blue-950/90 via-slate-900/95 to-cyan-950/90 p-3.5 sm:p-6 shadow-xl backdrop-blur-xl space-y-3.5 sm:space-y-5">
+        <div className="absolute -top-24 -right-24 w-60 h-60 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none" />
+
+        {/* Top title and View Mode tabs */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 sm:p-2.5 rounded-xl sm:rounded-2xl bg-gradient-to-tr from-cyan-500 to-blue-600 text-white shadow-md shadow-cyan-500/25 flex-shrink-0">
+              <Target className="h-5 w-5 sm:h-6 sm:w-6" />
+            </div>
+            <div className="min-w-0">
+              <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-widest text-cyan-400 block truncate">
+                EASYCALC FACTORY ERP
+              </span>
+              <h1 className="text-base sm:text-2xl font-black text-white tracking-tight truncate">
+                Production Planning & Target Control
+              </h1>
+            </div>
+          </div>
+
+          {/* 3-Tab Segmented Switcher */}
+          <div className="grid grid-cols-3 gap-1 p-1 bg-black/40 border border-white/10 rounded-xl sm:rounded-2xl w-full md:w-auto">
+            <button
+              type="button"
+              onClick={() => setActiveTab('order-plans')}
+              className={`py-1.5 px-2 sm:px-3.5 rounded-lg sm:rounded-xl text-[11px] sm:text-xs font-black transition flex items-center justify-center gap-1.5 ${
+                activeTab === 'order-plans'
+                  ? 'bg-gradient-to-r from-blue-600 to-cyan-500 text-white shadow-md shadow-cyan-500/20'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Target className="h-3.5 w-3.5 flex-shrink-0" />
+              <span className="truncate">Orders</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('matrix')}
+              className={`py-1.5 px-2 sm:px-3.5 rounded-lg sm:rounded-xl text-[11px] sm:text-xs font-black transition flex items-center justify-center gap-1.5 ${
+                activeTab === 'matrix'
+                  ? 'bg-gradient-to-r from-blue-600 to-cyan-500 text-white shadow-md shadow-cyan-500/20'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Layers className="h-3.5 w-3.5 flex-shrink-0" />
+              <span className="truncate">Matrix</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('simulator')}
+              className={`py-1.5 px-2 sm:px-3.5 rounded-lg sm:rounded-xl text-[11px] sm:text-xs font-black transition flex items-center justify-center gap-1.5 ${
+                activeTab === 'simulator'
+                  ? 'bg-gradient-to-r from-blue-600 to-cyan-500 text-white shadow-md shadow-cyan-500/20'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Zap className="h-3.5 w-3.5 flex-shrink-0" />
+              <span className="truncate">Timeline</span>
+            </button>
+          </div>
+        </div>
+
+        {/* 4 Summary KPI Cards (Responsive 2x2 grid on mobile, 4-col on desktop) */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3.5 pt-3 border-t border-white/10">
+          {/* Today's Target vs Produced */}
+          <div className="bg-slate-900/70 border border-white/10 rounded-xl sm:rounded-2xl p-2.5 sm:p-3.5 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider">Today's Target</span>
+              <span className={`text-[9px] sm:text-[10px] font-black px-1.5 py-0.5 rounded-full ${
+                factorySummary.todayFillRate >= 90 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'
+              }`}>
+                {factorySummary.todayFillRate}%
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between gap-1 flex-wrap">
+              <span className="text-base sm:text-xl font-black text-cyan-400">
+                {factorySummary.actualTodayTotal.toLocaleString()}
+              </span>
+              <span className="text-[10px] sm:text-xs text-slate-400">
+                / {factorySummary.plannedDailyTotal.toLocaleString()}
+              </span>
+            </div>
+            <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+              <div
+                className="bg-gradient-to-r from-blue-500 to-cyan-400 h-full rounded-full"
+                style={{ width: `${factorySummary.todayFillRate}%` }}
+              />
+            </div>
+          </div>
+
+          {/* This Week's Target vs Produced */}
+          <div className="bg-slate-900/70 border border-white/10 rounded-xl sm:rounded-2xl p-2.5 sm:p-3.5 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider">Weekly Target</span>
+              <span className="text-[9px] sm:text-[10px] font-black px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300">
+                {factorySummary.weekFillRate}%
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between gap-1 flex-wrap">
+              <span className="text-base sm:text-xl font-black text-emerald-400">
+                {factorySummary.actualWeekTotal.toLocaleString()}
+              </span>
+              <span className="text-[10px] sm:text-xs text-slate-400">
+                / {factorySummary.plannedWeeklyTotal.toLocaleString()}
+              </span>
+            </div>
+            <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+              <div
+                className="bg-gradient-to-r from-cyan-500 to-emerald-400 h-full rounded-full"
+                style={{ width: `${factorySummary.weekFillRate}%` }}
+              />
+            </div>
+          </div>
+
+          {/* Factory Total Due / Backlog */}
+          <div className="bg-slate-900/70 border border-white/10 rounded-xl sm:rounded-2xl p-2.5 sm:p-3.5 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider">Total Factory Due</span>
+              <span className="text-[9px] sm:text-[10px] font-black px-1.5 py-0.5 rounded-full bg-rose-500/20 text-rose-300">
+                Backlog
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between gap-1">
+              <span className="text-base sm:text-xl font-black text-rose-400">
+                {factorySummary.totalFactoryDue.toLocaleString()}
+              </span>
+              <span className="text-[10px] sm:text-xs text-slate-400">{defaultProductionUnit}</span>
+            </div>
+            <p className="text-[9px] sm:text-[10px] text-slate-400 truncate">
+              Uncompleted target work
             </p>
           </div>
-          <div className="rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-surface)] p-4 text-sm text-[var(--ec-foreground)]">
-            <p className="font-semibold">Standard working hours</p>
-            <p className="mt-1 text-[var(--ec-muted)]">{STANDARD_WORKING_HOURS} hours per day</p>
+
+          {/* Active Orders & Behind Sections */}
+          <div className="bg-slate-900/70 border border-white/10 rounded-xl sm:rounded-2xl p-2.5 sm:p-3.5 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider">Active Operations</span>
+              <span className="text-[9px] sm:text-[10px] font-black px-1.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300">
+                {factorySummary.activeOrdersCount} Orders
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between gap-1">
+              <span className="text-base sm:text-xl font-black text-amber-400">
+                {factorySummary.behindSectionsCount}
+              </span>
+              <span className="text-[10px] sm:text-xs text-slate-400">Sections Due</span>
+            </div>
+            <p className="text-[9px] sm:text-[10px] text-slate-400 truncate">
+              Across running departments
+            </p>
           </div>
         </div>
+      </div>
 
-        <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <div className="rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-surface)] p-5">
-            <p className="text-sm text-[var(--ec-muted)]">Departments</p>
-            <p className="mt-3 text-3xl font-semibold text-[var(--ec-foreground)]">{companySummary.totalDepartments}</p>
-          </div>
-          <div className="rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-surface)] p-5">
-            <p className="text-sm text-[var(--ec-muted)]">Total Manpower</p>
-            <p className="mt-3 text-3xl font-semibold text-[var(--ec-foreground)]">{companySummary.totalManpower}</p>
-          </div>
-          <div className="rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-surface)] p-5">
-            <p className="text-sm text-[var(--ec-muted)]">Urgent orders (7d)</p>
-            <p className="mt-3 text-3xl font-semibold text-[var(--ec-foreground)]">{companySummary.urgentOrders}</p>
-          </div>
-          <div className="rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-surface)] p-5">
-            <p className="text-sm text-[var(--ec-muted)]">Current Order</p>
-            <p className="mt-3 text-3xl font-semibold text-[var(--ec-foreground)]">{selectedOrder?.orderNumber ?? 'None'}</p>
-          </div>
-        </div>
+      {/* ------------------------------------------------------------- */}
+      {/* TAB 1: ORDER-WISE PRODUCTION PLAN & TARGETS */}
+      {/* ------------------------------------------------------------- */}
+      {activeTab === 'order-plans' && (
+        <div className="space-y-4 sm:space-y-6">
+          {/* Order Selector Toolbar */}
+          <div className="rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-card)] p-3 sm:p-4 shadow-sm space-y-3">
+            {/* Filter controls row */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 sm:gap-3">
+              {/* Search */}
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--ec-muted)]" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Filter order # or buyer..."
+                  className="w-full rounded-xl border border-[var(--ec-border)] bg-[var(--ec-surface)] pl-9 pr-3 py-2 text-xs text-[var(--ec-foreground)] placeholder-[var(--ec-muted)] focus:outline-none focus:border-cyan-500"
+                />
+              </div>
 
-        {/* Tab Navigation */}
-        <div className="mt-8 flex border-b border-[var(--ec-border)]">
-          <button
-            type="button"
-            onClick={() => setActiveTab('standard')}
-            className={`px-6 py-3 text-sm font-semibold border-b-2 transition ${
-              activeTab === 'standard'
-                ? 'border-[var(--ec-primary)] text-[var(--ec-primary)] font-bold'
-                : 'border-transparent text-[var(--ec-muted)] hover:text-[var(--ec-foreground)]'
-            }`}
-          >
-            Standard Capacity Planning
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('multi-order')}
-            className={`px-6 py-3 text-sm font-semibold border-b-2 transition ${
-              activeTab === 'multi-order'
-                ? 'border-[var(--ec-primary)] text-[var(--ec-primary)] font-bold'
-                : 'border-transparent text-[var(--ec-muted)] hover:text-[var(--ec-foreground)]'
-            }`}
-          >
-            Multi-Order Overtime Simulator
-          </button>
-        </div>
+              {/* Status Select */}
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="rounded-xl border border-[var(--ec-border)] bg-[var(--ec-surface)] px-3 py-2 text-xs font-semibold text-[var(--ec-foreground)] focus:outline-none focus:border-cyan-500"
+              >
+                <option value="all">All Order Statuses</option>
+                <option value="In Progress">In Progress</option>
+                <option value="Pending">Pending</option>
+                <option value="Completed">Completed</option>
+              </select>
 
-        {activeTab === 'standard' ? (
-          <>
-            <div className="mt-8 rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-card)] p-6">
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div>
-                  <h2 className="text-xl font-semibold text-[var(--ec-foreground)]">Advanced customization panel</h2>
-                  <p className="mt-2 text-sm text-[var(--ec-muted)]">
-                    Adjust working hours, headcount, machines, overtime and shift count to simulate production capacity instantly.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleImportDepartmentCapacity}
-                  className="inline-flex items-center rounded-full border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-300 transition hover:bg-cyan-500/20"
+              {/* Mobile Order Dropdown Selector */}
+              <div className="relative">
+                <select
+                  value={selectedOrderId}
+                  onChange={(e) => setSelectedOrderId(e.target.value)}
+                  className="w-full rounded-xl border border-cyan-500/40 bg-[var(--ec-surface)] px-3 py-2 text-xs font-bold text-cyan-400 focus:outline-none focus:border-cyan-500 appearance-none cursor-pointer pr-8 truncate"
                 >
-                  ⚙️ Import Department Capacity
-                </button>
-              </div>
-
-              <div className="mt-6 grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-                <div className="space-y-4">
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <label className="text-sm text-[var(--ec-muted)]">
-                      Department
-                      <select
-                        value={selectedDepartmentName}
-                        onChange={(event) => setSelectedDepartmentName(event.target.value)}
-                        className="mt-2 w-full rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-surface)] px-3 py-2 text-sm text-[var(--ec-foreground)] outline-none focus:border-cyan-400"
-                      >
-                        {departments.map((department) => (
-                          <option key={department.id} value={department.name}>
-                            {department.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <label className="text-sm text-[var(--ec-muted)]">
-                      Working Hours / Day
-                      <input
-                        type="number"
-                        min={1}
-                        value={customization.workingHours}
-                        onChange={(event) => handleCustomizationChange('workingHours', Number(event.target.value))}
-                        className="mt-2 w-full rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-surface)] px-3 py-2 text-sm text-[var(--ec-foreground)] outline-none focus:border-cyan-400"
-                      />
-                    </label>
-
-                    <label className="text-sm text-[var(--ec-muted)]">
-                      Workers
-                      <input
-                        type="number"
-                        min={1}
-                        value={customization.workers}
-                        onChange={(event) => handleCustomizationChange('workers', Number(event.target.value))}
-                        className="mt-2 w-full rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-surface)] px-3 py-2 text-sm text-[var(--ec-foreground)] outline-none focus:border-cyan-400"
-                      />
-                    </label>
-
-                    <label className="text-sm text-[var(--ec-muted)]">
-                      Machines
-                      <input
-                        type="number"
-                        min={1}
-                        value={customization.machines}
-                        onChange={(event) => handleCustomizationChange('machines', Number(event.target.value))}
-                        className="mt-2 w-full rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-surface)] px-3 py-2 text-sm text-[var(--ec-foreground)] outline-none focus:border-cyan-400"
-                      />
-                    </label>
-
-                    <label className="text-sm text-[var(--ec-muted)]">
-                      Overtime Hours
-                      <input
-                        type="number"
-                        min={0}
-                        value={customization.overtimeHours}
-                        onChange={(event) => handleCustomizationChange('overtimeHours', Number(event.target.value))}
-                        className="mt-2 w-full rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-surface)] px-3 py-2 text-sm text-[var(--ec-foreground)] outline-none focus:border-cyan-400"
-                      />
-                    </label>
-
-                    <label className="text-sm text-[var(--ec-muted)]">
-                      Shift Count
-                      <input
-                        type="number"
-                        min={1}
-                        value={customization.shiftCount}
-                        onChange={(event) => handleCustomizationChange('shiftCount', Number(event.target.value))}
-                        className="mt-2 w-full rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-surface)] px-3 py-2 text-sm text-[var(--ec-foreground)] outline-none focus:border-cyan-400"
-                      />
-                    </label>
-                  </div>
-
-                  <label className="block text-sm text-[var(--ec-muted)]">
-                    Department Capacity Multiplier
-                    <input
-                      type="range"
-                      min="0.5"
-                      max="2"
-                      step="0.1"
-                      value={customization.capacityMultiplier}
-                      onChange={(event) => handleCustomizationChange('capacityMultiplier', Number(event.target.value))}
-                      className="mt-3 w-full accent-cyan-500"
-                    />
-                    <span className="mt-2 inline-block text-xs text-cyan-300">Multiplier {customization.capacityMultiplier.toFixed(1)}x</span>
-                  </label>
-
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    <div className="rounded-2xl bg-[var(--ec-surface)] p-3">
-                      <p className="text-xs text-[var(--ec-muted)]">Imported hourly capacity</p>
-                      <p className="mt-2 text-lg font-semibold text-[var(--ec-foreground)]">{importedHourlyCapacity.toLocaleString()} pairs/h</p>
-                    </div>
-                    <div className="rounded-2xl bg-[var(--ec-surface)] p-3">
-                      <p className="text-xs text-[var(--ec-muted)]">Adjusted hourly output</p>
-                      <p className="mt-2 text-lg font-semibold text-[var(--ec-foreground)]">{adjustedHourlyCapacity.toLocaleString()} pairs/h</p>
-                    </div>
-                    <div className="rounded-2xl bg-[var(--ec-surface)] p-3">
-                      <p className="text-xs text-[var(--ec-muted)]">Daily capacity</p>
-                      <p className="mt-2 text-lg font-semibold text-[var(--ec-foreground)]">{adjustedDailyCapacity.toLocaleString()} pairs</p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-surface)] p-5">
-                  <h3 className="text-lg font-semibold text-[var(--ec-foreground)]">Order completion simulation</h3>
-                  <p className="mt-2 text-sm text-[var(--ec-muted)]">{importMessage}</p>
-                  <div className="mt-5 grid gap-3">
-                    <div className="rounded-2xl bg-[var(--ec-card)] p-4">
-                      <p className="text-sm text-[var(--ec-muted)]">Selected order quantity</p>
-                      <p className="mt-2 text-2xl font-semibold text-[var(--ec-foreground)]">{selectedOrderQuantity.toLocaleString()} pairs</p>
-                    </div>
-                    <div className="rounded-2xl bg-[var(--ec-card)] p-4">
-                      <p className="text-sm text-[var(--ec-muted)]">Remaining after current plan</p>
-                      <p className="mt-2 text-2xl font-semibold text-[var(--ec-foreground)]">{pendingPairs.toLocaleString()} pairs</p>
-                    </div>
-                    <div className="rounded-2xl bg-[var(--ec-card)] p-4">
-                      <p className="text-sm text-[var(--ec-muted)]">Completion</p>
-                      <p className="mt-2 text-2xl font-semibold text-cyan-300">{completionPercentage}%</p>
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-2xl bg-[var(--ec-card)] p-4">
-                        <p className="text-sm text-[var(--ec-muted)]">Estimated completion</p>
-                        <p className="mt-2 text-lg font-semibold text-[var(--ec-foreground)]">{estimatedDays <= 1 ? 'Within 1 day' : `Within ${estimatedDays} days`}</p>
-                      </div>
-                      <div className="rounded-2xl bg-[var(--ec-card)] p-4">
-                        <p className="text-sm text-[var(--ec-muted)]">Shipment status</p>
-                        <p className="mt-2 text-lg font-semibold text-[var(--ec-foreground)]">{completionStatus} · {shipmentStatus}</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-6 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-                <div className="rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-surface)] p-5">
-                  <h3 className="text-lg font-semibold text-[var(--ec-foreground)]">Scenario comparison</h3>
-                  <div className="mt-4 space-y-3">
-                    {scenarioComparison.map((scenario) => (
-                      <div key={scenario.name} className="rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-card)] p-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <p className="font-semibold text-[var(--ec-foreground)]">{scenario.name}</p>
-                            <p className="text-xs text-[var(--ec-muted)]">{scenario.hours} hours / day</p>
-                          </div>
-                          <span className="rounded-full bg-cyan-500/10 px-3 py-1 text-xs text-cyan-300">{scenario.status}</span>
-                        </div>
-                        <div className="mt-3 grid gap-2 text-sm text-[var(--ec-muted)] sm:grid-cols-3">
-                          <div>
-                            <p>Capacity</p>
-                            <p className="font-semibold text-[var(--ec-foreground)]">{scenario.capacity.toLocaleString()}</p>
-                          </div>
-                          <div>
-                            <p>Completion</p>
-                            <p className="font-semibold text-[var(--ec-foreground)]">{scenario.completion}%</p>
-                          </div>
-                          <div>
-                            <p>Extra capacity</p>
-                            <p className="font-semibold text-[var(--ec-foreground)]">{scenario.extraCapacity.toLocaleString()}</p>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-surface)] p-5">
-                  <h3 className="text-lg font-semibold text-[var(--ec-foreground)]">Smart recommendations</h3>
-                  <p className="mt-2 text-sm text-[var(--ec-muted)]">The system recommends the most cost-efficient option to close the gap quickly.</p>
-                  <div className="mt-4 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-4">
-                    <p className="text-sm font-semibold text-cyan-300">Best option</p>
-                    <p className="mt-2 text-base font-semibold text-[var(--ec-foreground)]">{bestRecommendation.title}</p>
-                    <p className="mt-2 text-sm text-[var(--ec-muted)]">{bestRecommendation.detail}</p>
-                  </div>
-                  <div className="mt-4 space-y-2">
-                    {recommendationOptions.map((recommendation) => (
-                      <div key={recommendation.title} className="rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-card)] p-3">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-semibold text-[var(--ec-foreground)]">{recommendation.title}</p>
-                            <p className="mt-1 text-xs text-[var(--ec-muted)]">{recommendation.detail}</p>
-                          </div>
-                          <span className="rounded-full bg-yellow-500/10 px-2.5 py-1 text-xs text-yellow-300">{recommendation.impact.toLocaleString()} pairs</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-8 grid gap-6 lg:grid-cols-[1fr_420px]">
-              <div className="overflow-x-auto">
-                <table className="min-w-full border-separate border-spacing-y-3 text-sm">
-                  <thead>
-                    <tr className="text-left text-[var(--ec-muted)]">
-                      <th className="pb-3">Section</th>
-                      <th className="pb-3">Efficiency</th>
-                      <th className="pb-3">Manpower</th>
-                      <th className="pb-3">Work Hours</th>
-                      <th className="pb-3">Output / h</th>
-                      <th className="pb-3">Daily Cap.</th>
-                      <th className="pb-3">Order Load</th>
-                      <th className="pb-3">Backlog</th>
-                      <th className="pb-3">Urgent</th>
-                      <th className="pb-3">Planned Hours</th>
-                      <th className="pb-3">Planned Manpower</th>
-                      <th className="pb-3">Projected Output</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {planningRows.map((row) => (
-                      <tr key={row.department.id} className="bg-[var(--ec-card)] rounded-3xl border border-[var(--ec-border)] align-top">
-                        <td className="px-4 py-3 font-semibold text-[var(--ec-foreground)]">{row.department.name}</td>
-                        <td className="px-4 py-3 text-[var(--ec-muted)]">{row.department.efficiency ?? 0}%</td>
-                        <td className="px-4 py-3 text-[var(--ec-muted)]">{row.department.manpower ?? 0}</td>
-                        <td className="px-4 py-3 text-[var(--ec-muted)]">{row.workingHours}h</td>
-                        <td className="px-4 py-3 text-[var(--ec-muted)]">{row.currentHourly.toFixed(1)}</td>
-                        <td className="px-4 py-3 text-[var(--ec-muted)]">{row.standardOutput}</td>
-                        <td className="px-4 py-3 text-[var(--ec-muted)]">{row.orderLoadQuantity} / {row.orderLoadCount} orders</td>
-                        <td className="px-4 py-3 text-[var(--ec-muted)]">{row.backlog}</td>
-                        <td className="px-4 py-3 text-[var(--ec-muted)]">{row.urgentOrders}</td>
-                        <td className="px-4 py-3">
-                          <input
-                            type="number"
-                            min={0}
-                            value={row.plannedHours}
-                            onChange={(e) => handlePlanChange(row.department.id, 'plannedHours', e.target.value)}
-                            className="w-20 rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-surface)] px-3 py-2 text-sm text-[var(--ec-foreground)]"
-                          />
-                        </td>
-                        <td className="px-4 py-3">
-                          <input
-                            type="number"
-                            min={0}
-                            value={row.plannedManpower}
-                            onChange={(e) => handlePlanChange(row.department.id, 'plannedManpower', e.target.value)}
-                            className="w-20 rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-surface)] px-3 py-2 text-sm text-[var(--ec-foreground)]"
-                          />
-                        </td>
-                        <td className="px-4 py-3 text-[var(--ec-muted)]">{row.plannedOutput}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-surface)] p-5">
-                <h2 className="text-lg font-semibold text-[var(--ec-foreground)]">Order-specific planning</h2>
-                <div className="mt-4 space-y-4">
-                  <label className="block text-sm text-[var(--ec-muted)]">
-                    Select order
-                    <select
-                      value={selectedOrderId}
-                      onChange={(e) => setSelectedOrderId(e.target.value)}
-                      className="mt-2 w-full rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-card)] px-3 py-2 text-sm text-[var(--ec-foreground)]"
-                    >
-                      <option value="">Choose an order</option>
-                      {buyerOrders.map((order) => (
-                        <option key={order.id} value={order.id}>
-                          {order.orderNumber} • {order.articleName} • {order.quantity} {order.unit}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  {selectedOrder ? (
-                    <div className="rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-card)] p-4 text-sm">
-                      <p className="font-semibold text-[var(--ec-foreground)]">{selectedOrder.orderNumber}</p>
-                      <p className="text-[var(--ec-muted)]">{selectedOrder.articleName} • {selectedOrder.color} • {selectedOrder.quantity} {selectedOrder.unit}</p>
-                      <p className="mt-3 text-sm text-[var(--ec-muted)]">Delivery date: {selectedOrder.deliveryDate ? new Date(selectedOrder.deliveryDate).toLocaleDateString() : 'Not set'}</p>
-
-                      <div className="mt-4 space-y-3">
-                        {selectedOrderPlanRows.map((row) => (
-                          <div key={row.departmentName} className={`rounded-2xl border p-3 ${row.isActivePlan ? 'border-cyan-500/50 bg-cyan-500/10' : 'border-[var(--ec-border)] bg-[var(--ec-surface)]'}`}>
-                            <div className="flex items-center justify-between gap-4">
-                              <div>
-                                <p className="font-semibold text-[var(--ec-foreground)]">{row.departmentName}</p>
-                                <p className="text-xs text-[var(--ec-muted)]">Required quantity: {row.requiredQuantity}</p>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <span className="rounded-full bg-[var(--ec-card)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--ec-muted)]">
-                                  Plan {row.index}
-                                </span>
-                                {row.isActivePlan && (
-                                  <span className="rounded-full bg-cyan-500/15 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-cyan-300">
-                                    Auto-selected
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-
-                            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                              <label className="text-sm text-[var(--ec-muted)]">
-                                Plan date
-                                <input
-                                  type="date"
-                                  value={row.plan.date}
-                                  onChange={(e) => handleOrderPlanChange(row.departmentName, 'date', e.target.value)}
-                                  className="mt-2 w-full rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-card)] px-3 py-2 text-sm text-[var(--ec-foreground)]"
-                                />
-                              </label>
-                              <label className="text-sm text-[var(--ec-muted)]">
-                                Days
-                                <input
-                                  type="number"
-                                  min={0}
-                                  value={row.plan.days}
-                                  onChange={(e) => handleOrderPlanChange(row.departmentName, 'days', e.target.value)}
-                                  className="mt-2 w-full rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-card)] px-3 py-2 text-sm text-[var(--ec-foreground)]"
-                                />
-                              </label>
-                              <label className="text-sm text-[var(--ec-muted)]">
-                                Hours/day
-                                <input
-                                  type="number"
-                                  min={0}
-                                  value={row.plan.hoursPerDay}
-                                  onChange={(e) => handleOrderPlanChange(row.departmentName, 'hoursPerDay', e.target.value)}
-                                  className="mt-2 w-full rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-card)] px-3 py-2 text-sm text-[var(--ec-foreground)]"
-                                />
-                              </label>
-                              <label className="text-sm text-[var(--ec-muted)]">
-                                Hourly (u/h)
-                                <input
-                                  type="number"
-                                  step="0.1"
-                                  min={0}
-                                  value={row.plan.hourlyProduction ?? ''}
-                                  onChange={(e) => handleOrderPlanChange(row.departmentName, 'hourlyProduction', e.target.value)}
-                                  className="mt-2 w-full rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-card)] px-3 py-2 text-sm text-[var(--ec-foreground)]"
-                                />
-                              </label>
-                              <label className="text-sm text-[var(--ec-muted)]">
-                                Manpower
-                                <input
-                                  type="number"
-                                  min={0}
-                                  value={row.plan.manpower}
-                                  onChange={(e) => handleOrderPlanChange(row.departmentName, 'manpower', e.target.value)}
-                                  className="mt-2 w-full rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-card)] px-3 py-2 text-sm text-[var(--ec-foreground)]"
-                                />
-                              </label>
-                            </div>
-
-                            <div className="mt-3 grid gap-3 sm:grid-cols-3 text-sm text-[var(--ec-muted)]">
-                              <div>
-                                <p>Total hours</p>
-                                <p className="font-semibold text-[var(--ec-foreground)]">{row.totalHours}</p>
-                              </div>
-                              <div>
-                                <p>Output / day</p>
-                                <p className="font-semibold text-[var(--ec-foreground)]">{row.outputPerDay}</p>
-                              </div>
-                              <div>
-                                <p>Projected output</p>
-                                <p className="font-semibold text-[var(--ec-foreground)]">{row.projectedOutput}</p>
-                              </div>
-                              <div>
-                                <p>Completed</p>
-                                <p className="font-semibold text-[var(--ec-foreground)]">{row.actualCompleted}</p>
-                              </div>
-                              <div>
-                                <p>Remaining</p>
-                                <p className="font-semibold text-[var(--ec-foreground)]">{row.actualRemaining}</p>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-card)] p-4 text-sm text-[var(--ec-muted)]">
-                      Select an order to create day-by-day, hour-by-hour planning for each department.
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-8 grid gap-4 lg:grid-cols-2">
-              <div className="rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-surface)] p-6">
-                <h2 className="text-lg font-semibold text-[var(--ec-foreground)]">Action recommendations</h2>
-                <p className="mt-3 text-sm text-[var(--ec-muted)]">
-                  Review departments with a high backlog or urgent orders first. Increase planned working hours or manpower in those sections if delivery dates must be met.
-                </p>
-                <div className="mt-4 space-y-3">
-                  {planningRows.filter((row) => row.urgentOrders > 0 || row.backlog > row.standardOutput).slice(0, 3).map((row) => (
-                    <div key={row.department.id} className="rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-card)] p-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <p className="font-semibold text-[var(--ec-foreground)]">{row.department.name}</p>
-                          <p className="text-xs text-[var(--ec-muted)]">{row.workPressure} pressure</p>
-                        </div>
-                        <span className="rounded-full bg-yellow-500/10 px-3 py-1 text-xs text-yellow-300">{row.urgentOrders} urgent</span>
-                      </div>
-                      <p className="mt-3 text-sm text-[var(--ec-muted)]">
-                        Backlog {row.backlog} units and {row.urgentOrders} orders due soon. Consider adding {Math.ceil(row.extraHoursNeeded)} extra hours or more manpower for on-time delivery.
-                      </p>
-                    </div>
+                  {filteredOrders.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      #{o.orderNumber} - {o.buyerName} ({o.quantity} {o.unit || defaultProductionUnit})
+                    </option>
                   ))}
-                  {planningRows.filter((row) => row.urgentOrders > 0 || row.backlog > row.standardOutput).length === 0 && (
-                    <p className="text-sm text-[var(--ec-muted)]">All departments are operating within standard capacity for current backlog.</p>
-                  )}
-                </div>
-              </div>
-
-              <div className="rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-surface)] p-6">
-                <h2 className="text-lg font-semibold text-[var(--ec-foreground)]">Company planning note</h2>
-                <p className="mt-3 text-sm leading-7 text-[var(--ec-muted)]">
-                  This planning section gathers data from every department, including manpower, standard hours, hourly output and order urgency. Use the editable plan fields to set extra working hours or manpower for departments that need a temporary boost.
-                </p>
-                <div className="mt-4 rounded-2xl bg-[var(--ec-card)] p-4">
-                  <p className="text-sm text-[var(--ec-muted)]">Total backlog</p>
-                  <p className="mt-2 text-2xl font-semibold text-[var(--ec-foreground)]">{companySummary.totalBacklog} units</p>
-                </div>
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="mt-8 space-y-8">
-            {/* 1. Global System Parameters Display */}
-            <div className="grid gap-4 sm:grid-cols-3">
-              <div className="rounded-3xl border border-cyan-500/40 bg-cyan-500/10 p-5">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-semibold text-[var(--ec-foreground)]">Standard Working Hours</p>
-                  <span className="rounded-full bg-cyan-600 px-2.5 py-0.5 text-[10px] font-bold text-white">FIXED</span>
-                </div>
-                <p className="mt-3 text-3xl font-bold text-[var(--ec-foreground)]">8 Hours / Day</p>
-                <p className="mt-1 text-xs font-semibold text-[var(--ec-muted)]">Standard shift duration limit</p>
-              </div>
-              <div className="rounded-3xl border border-amber-500/40 bg-amber-500/10 p-5">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-semibold text-[var(--ec-foreground)]">Max Allowable Overtime</p>
-                  <span className="rounded-full bg-amber-600 px-2.5 py-0.5 text-[10px] font-bold text-white">FIXED</span>
-                </div>
-                <p className="mt-3 text-3xl font-bold text-[var(--ec-foreground)]">4 Hours / Day</p>
-                <p className="mt-1 text-xs font-semibold text-[var(--ec-muted)]">Maximum 12 hours shift length limit</p>
-              </div>
-              <div className="rounded-3xl border border-purple-500/40 bg-purple-500/10 p-5">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-semibold text-[var(--ec-foreground)]">Workers & Machines Capacity</p>
-                  <span className="rounded-full bg-purple-600 px-2.5 py-0.5 text-[10px] font-bold text-white">FIXED</span>
-                </div>
-                <p className="mt-3 text-3xl font-bold text-[var(--ec-foreground)]">100% Limit</p>
-                <p className="mt-1 text-xs font-semibold text-[var(--ec-muted)]">Headcount & setups cannot be increased</p>
+                </select>
+                <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-cyan-400 pointer-events-none" />
               </div>
             </div>
 
-            {/* 2. Interactive Selection & Rates Table */}
-            <div className="rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-card)] p-6">
-              <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--ec-border)] pb-4">
-                <div>
-                  <h2 className="text-xl font-semibold text-[var(--ec-foreground)]">Batch Simulator (Multi-Order Select)</h2>
-                  <p className="mt-1 text-sm text-[var(--ec-muted)]">
-                    Select multiple orders and manually assign the "Production Per Hour" for each based on style difficulty.
+            {/* Quick Order Horizontal Chips (Touch-friendly & sleek) */}
+            <div className="flex items-center gap-2 overflow-x-auto pb-1 pt-1 no-scrollbar">
+              {filteredOrders.map((order) => {
+                const isSelected = selectedOrder?.id === order.id;
+                const plan = getOrderPlan(order);
+                const reqDepts = Object.keys(plan.sections);
+                let totalDone = 0;
+                reqDepts.forEach((dept) => {
+                  const m = getOrderDeptMetrics(order.id, dept, plan.sections[dept]);
+                  totalDone = Math.max(totalDone, m.totalActual);
+                });
+                const overallPct = order.quantity > 0 ? Math.min(100, Math.round((totalDone / order.quantity) * 100)) : 0;
+
+                return (
+                  <button
+                    key={order.id}
+                    type="button"
+                    onClick={() => setSelectedOrderId(order.id)}
+                    className={`flex-shrink-0 px-3 py-2 rounded-xl border text-left transition flex items-center gap-2.5 ${
+                      isSelected
+                        ? 'border-cyan-500 bg-cyan-500/15 text-cyan-400 ring-1 ring-cyan-500 shadow-sm'
+                        : 'border-[var(--ec-border)] bg-[var(--ec-surface)] text-[var(--ec-foreground)] hover:border-cyan-500/40'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono font-black text-xs">#{order.orderNumber}</span>
+                        <span className="text-[10px] font-black text-emerald-400">{overallPct}%</span>
+                      </div>
+                      <p className="text-[10px] text-[var(--ec-muted)] truncate max-w-[120px]">{order.buyerName}</p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Selected Order Detailed Plan & Section Target Matrix */}
+          {selectedOrder && selectedOrderPlan && (
+            <div className="rounded-2xl sm:rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-card)] p-3.5 sm:p-5 shadow-sm space-y-4 sm:space-y-5">
+              {/* Order Header Summary Banner */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3.5 border-b border-[var(--ec-border)]">
+                <div className="space-y-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2 className="text-base sm:text-xl font-black text-[var(--ec-foreground)] truncate">
+                      Order #{selectedOrder.orderNumber}
+                    </h2>
+                    <span className="text-xs text-[var(--ec-muted)] font-semibold truncate">
+                      ({selectedOrder.buyerName})
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-cyan-500/15 text-cyan-400 border border-cyan-500/30">
+                      {selectedOrder.status || 'Active'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-[var(--ec-muted)]">
+                    Article: <strong className="text-[var(--ec-foreground)]">{selectedOrder.articleName || 'Standard'}</strong> • Total Planned: <strong className="text-cyan-400">{selectedOrder.quantity} {selectedOrder.unit || defaultProductionUnit}</strong>
                   </p>
                 </div>
+
                 <button
                   type="button"
-                  onClick={handleResetSimOrders}
-                  className="rounded-full border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-300 transition hover:bg-cyan-500/20"
+                  onClick={() => handleOpenEditPlan(selectedOrder)}
+                  className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white text-xs font-black transition shadow-md shadow-cyan-500/20 w-full sm:w-auto"
                 >
-                  🔄 Reset Example Batch
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  <span>Change Plan</span>
                 </button>
               </div>
 
-              {/* Add Order Controls */}
-              <div className="mt-6 grid gap-4 rounded-2xl bg-[var(--ec-surface)] p-4 sm:grid-cols-[2fr_1.5fr_1fr_1.2fr_auto] items-end">
-                <label className="text-xs font-semibold text-[var(--ec-muted)] flex flex-col gap-1.5">
-                  Load Live Order
-                  <select
-                    value={newSimOrder.orderId}
-                    onChange={(e) => setNewSimOrder(prev => ({ ...prev, orderId: e.target.value }))}
-                    className="rounded-xl border border-[var(--ec-border)] bg-[var(--ec-card)] px-3 py-2 text-sm text-[var(--ec-foreground)] outline-none"
-                  >
-                    <option value="">Select an order...</option>
-                    {buyerOrders
-                      .filter(bo => !simOrders.some(so => so.id === `sim-sys-${bo.id}`))
-                      .map(bo => (
-                        <option key={bo.id} value={bo.id}>
-                          {bo.orderNumber} • {bo.articleName} ({bo.quantity} pairs)
-                        </option>
-                      ))
-                    }
-                  </select>
-                </label>
-                <button
-                  type="button"
-                  onClick={handleAddSystemSimOrder}
-                  disabled={!newSimOrder.orderId}
-                  className="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-50"
-                >
-                  ➕ Add Live Order
-                </button>
-                <div className="hidden sm:block border-l border-[var(--ec-border)] h-8 self-center mx-auto"></div>
-                <div className="col-span-full grid gap-4 sm:col-span-2 sm:grid-cols-4 items-end">
-                  <label className="text-xs font-semibold text-[var(--ec-muted)] flex flex-col gap-1.5 col-span-2">
-                    Custom Style / No.
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        placeholder="No."
-                        value={newSimOrder.customNo}
-                        onChange={(e) => setNewSimOrder(prev => ({ ...prev, customNo: e.target.value }))}
-                        className="w-1/3 rounded-xl border border-[var(--ec-border)] bg-[var(--ec-card)] px-2 py-2 text-sm text-[var(--ec-foreground)] outline-none"
-                      />
-                      <input
-                        type="text"
-                        placeholder="Style name"
-                        value={newSimOrder.customStyle}
-                        onChange={(e) => setNewSimOrder(prev => ({ ...prev, customStyle: e.target.value }))}
-                        className="w-2/3 rounded-xl border border-[var(--ec-border)] bg-[var(--ec-card)] px-2 py-2 text-sm text-[var(--ec-foreground)] outline-none"
-                      />
-                    </div>
-                  </label>
-                  <label className="text-xs font-semibold text-[var(--ec-muted)] flex flex-col gap-1.5">
-                    Qty / Rate
-                    <div className="flex gap-2">
-                      <input
-                        type="number"
-                        placeholder="Qty"
-                        value={newSimOrder.customQty}
-                        onChange={(e) => setNewSimOrder(prev => ({ ...prev, customQty: e.target.value }))}
-                        className="w-1/2 rounded-xl border border-[var(--ec-border)] bg-[var(--ec-card)] px-1.5 py-2 text-sm text-[var(--ec-foreground)] outline-none text-center"
-                      />
-                      <input
-                        type="number"
-                        placeholder="Rate"
-                        value={newSimOrder.customRate}
-                        onChange={(e) => setNewSimOrder(prev => ({ ...prev, customRate: e.target.value }))}
-                        className="w-1/2 rounded-xl border border-[var(--ec-border)] bg-[var(--ec-card)] px-1.5 py-2 text-sm text-[var(--ec-foreground)] outline-none text-center"
-                      />
-                    </div>
-                  </label>
+              {/* 3 TARGET HORIZON OPTIONS (Daily Target | Weekly Target | Monthly Target) */}
+              <div className="pt-1">
+                <div className="grid grid-cols-3 gap-1.5 p-1 bg-[var(--ec-surface)] border border-[var(--ec-border)] rounded-2xl shadow-inner">
                   <button
                     type="button"
-                    onClick={handleAddCustomSimOrder}
-                    className="rounded-xl border border-dashed border-cyan-500 text-cyan-400 bg-cyan-500/5 px-3 py-2 text-sm font-semibold transition hover:bg-cyan-500/10"
+                    onClick={() => setTargetHorizonFilter('daily')}
+                    className={`py-2 px-2 sm:px-4 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 ${
+                      targetHorizonFilter === 'daily'
+                        ? 'bg-gradient-to-r from-blue-600 to-cyan-500 text-white shadow-md shadow-cyan-500/25 ring-1 ring-cyan-400'
+                        : 'text-[var(--ec-muted)] hover:text-[var(--ec-foreground)]'
+                    }`}
                   >
-                    ➕ Add Custom
+                    <Clock className="h-3.5 w-3.5 flex-shrink-0" />
+                    <span className="truncate">Daily Target</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTargetHorizonFilter('weekly')}
+                    className={`py-2 px-2 sm:px-4 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 ${
+                      targetHorizonFilter === 'weekly'
+                        ? 'bg-gradient-to-r from-blue-600 to-cyan-500 text-white shadow-md shadow-cyan-500/25 ring-1 ring-cyan-400'
+                        : 'text-[var(--ec-muted)] hover:text-[var(--ec-foreground)]'
+                    }`}
+                  >
+                    <CalendarDays className="h-3.5 w-3.5 flex-shrink-0" />
+                    <span className="truncate">Weekly Target</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTargetHorizonFilter('monthly')}
+                    className={`py-2 px-2 sm:px-4 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 ${
+                      targetHorizonFilter === 'monthly'
+                        ? 'bg-gradient-to-r from-blue-600 to-cyan-500 text-white shadow-md shadow-cyan-500/25 ring-1 ring-cyan-400'
+                        : 'text-[var(--ec-muted)] hover:text-[var(--ec-foreground)]'
+                    }`}
+                  >
+                    <Target className="h-3.5 w-3.5 flex-shrink-0" />
+                    <span className="truncate">Monthly Target</span>
                   </button>
                 </div>
               </div>
 
-              {/* Sim Orders List Table */}
-              <div className="mt-6 overflow-x-auto">
-                <table className="w-full text-left text-sm border-collapse">
-                  <thead>
-                    <tr className="border-b border-[var(--ec-border)] text-[var(--ec-muted)]">
-                      <th className="pb-3 font-semibold">Order ID</th>
-                      <th className="pb-3 font-semibold">Style/Article</th>
-                      <th className="pb-3 font-semibold text-right">Total Qty (Pairs)</th>
-                      <th className="pb-3 font-semibold text-right">User Defined Rate (Pairs/Hour)</th>
-                      <th className="pb-3 font-semibold text-right">Required Hours</th>
-                      <th className="pb-3 text-center">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {simOrders.length === 0 ? (
-                      <tr>
-                        <td colSpan={6} className="py-6 text-center text-[var(--ec-muted)]">
-                          No orders added to simulation batch. Add orders above or reset to the example dataset.
-                        </td>
-                      </tr>
-                    ) : (
-                      simOrders.map((o) => (
-                        <tr key={o.id} className="border-b border-[var(--ec-border)] hover:bg-[var(--ec-surface)]/20">
-                          <td className="py-4 font-medium text-[var(--ec-foreground)]">
-                            <input
-                              type="text"
-                              value={o.orderNumber}
-                              onChange={(e) => handleUpdateSimOrderField(o.id, 'orderNumber', e.target.value)}
-                              className="w-24 bg-transparent border-b border-transparent hover:border-[var(--ec-border)] focus:border-cyan-500 focus:border-b outline-none text-[var(--ec-foreground)] py-0.5"
-                            />
-                          </td>
-                          <td className="py-4 text-[var(--ec-muted)]">
-                            <input
-                              type="text"
-                              value={o.style}
-                              onChange={(e) => handleUpdateSimOrderField(o.id, 'style', e.target.value)}
-                              className="w-36 bg-transparent border-b border-transparent hover:border-[var(--ec-border)] focus:border-cyan-500 focus:border-b outline-none text-[var(--ec-muted)] py-0.5"
-                            />
-                          </td>
-                          <td className="py-4 text-right font-semibold">
-                            <input
-                              type="number"
-                              value={o.quantity}
-                              onChange={(e) => handleUpdateSimOrderQty(o.id, Number(e.target.value))}
-                              className="w-24 text-right bg-[var(--ec-surface)] border border-[var(--ec-border)] rounded-xl px-2.5 py-1 focus:border-cyan-500 outline-none text-[var(--ec-foreground)]"
-                            />
-                          </td>
-                          <td className="py-4 text-right font-semibold">
-                            <input
-                              type="number"
-                              value={o.rate}
-                              onChange={(e) => handleUpdateSimOrderRate(o.id, Number(e.target.value))}
-                              className="w-24 text-right bg-[var(--ec-surface)] border border-[var(--ec-border)] rounded-xl px-2.5 py-1 focus:border-cyan-500 outline-none text-[var(--ec-foreground)]"
-                            />
-                          </td>
-                          <td className="py-4 text-right font-semibold text-[var(--ec-foreground)]">
-                            {(o.quantity / (o.rate || 1)).toFixed(1)} hrs
-                          </td>
-                          <td className="py-4 text-center">
+              {/* Section Targets Grid */}
+              <div className="space-y-3 pt-1">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs sm:text-sm font-black uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
+                    <Layers className="h-3.5 w-3.5" />
+                    <span>
+                      {targetHorizonFilter === 'daily' && 'Daily Section Targets & Today\'s Due'}
+                      {targetHorizonFilter === 'weekly' && 'Weekly Section Targets & Week\'s Due'}
+                      {targetHorizonFilter === 'monthly' && 'Monthly & Total Section Targets & Backlog'}
+                    </span>
+                  </h3>
+                  <span className="text-[10px] text-[var(--ec-muted)] capitalize">
+                    {targetHorizonFilter} View Mode
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {Object.entries(selectedOrderPlan.sections).map(([dept, sTarget]) => {
+                    const metrics = getOrderDeptMetrics(selectedOrder.id, dept, sTarget);
+
+                    // Dynamic Horizon values according to selected option
+                    const horizonTarget = targetHorizonFilter === 'daily' ? metrics.dailyTarget : targetHorizonFilter === 'weekly' ? metrics.weeklyTarget : metrics.totalTarget;
+                    const horizonActual = targetHorizonFilter === 'daily' ? metrics.todayActual : targetHorizonFilter === 'weekly' ? metrics.weekActual : metrics.totalActual;
+                    const horizonPct = targetHorizonFilter === 'daily' ? metrics.dailyPct : targetHorizonFilter === 'weekly' ? metrics.weeklyPct : metrics.totalPct;
+                    const horizonDue = targetHorizonFilter === 'daily' ? metrics.todayDue : targetHorizonFilter === 'weekly' ? metrics.weekDue : metrics.totalDue;
+                    const horizonLabel = targetHorizonFilter === 'daily' ? "Today's Target" : targetHorizonFilter === 'weekly' ? "Week's Target" : "Total Target";
+                    const horizonDueLabel = targetHorizonFilter === 'daily' ? "Today's Due" : targetHorizonFilter === 'weekly' ? "Week's Due" : "Total Due";
+
+                    return (
+                      <div
+                        key={dept}
+                        className="rounded-xl sm:rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-surface)] p-3.5 sm:p-4 space-y-3 shadow-sm hover:border-cyan-500/50 transition"
+                      >
+                        {/* Section Name & Status Pill */}
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <div className="w-8 h-8 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 flex items-center justify-center font-black text-xs flex-shrink-0">
+                              {dept.slice(0, 2).toUpperCase()}
+                            </div>
+                            <div className="min-w-0">
+                              <h4 className="font-extrabold text-xs sm:text-sm text-[var(--ec-foreground)] truncate">{dept}</h4>
+                              <p className="text-[10px] text-[var(--ec-muted)]">
+                                {sTarget.manpower ? `${sTarget.manpower} workers` : 'Standard'} • {sTarget.workingHours || 8}h
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            <span className={`text-[9px] sm:text-[10px] font-black px-2 py-0.5 rounded-full border ${
+                              metrics.status === 'Completed'
+                                ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                                : metrics.status === 'Ahead'
+                                ? 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30'
+                                : metrics.status === 'Behind Due'
+                                ? 'bg-rose-500/15 text-rose-400 border-rose-500/30'
+                                : 'bg-slate-500/15 text-slate-400 border-slate-500/30'
+                            }`}>
+                              {metrics.status}
+                            </span>
                             <button
                               type="button"
-                              onClick={() => handleDeleteSimOrder(o.id)}
-                              className="text-red-400 hover:text-red-300 font-semibold p-1"
+                              onClick={() => handleOpenEditPlan(selectedOrder, dept)}
+                              className="p-1 rounded-lg text-[var(--ec-muted)] hover:text-cyan-400 hover:bg-[var(--ec-card)] transition"
+                              title="Edit target"
                             >
-                              ✕
+                              <Pencil className="h-3 w-3" />
                             </button>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+                          </div>
+                        </div>
 
-            {/* 3. Batch Overtime Scenarios Section */}
-            <div className="space-y-4">
-              <h2 className="text-xl font-semibold text-[var(--ec-foreground)]">3 Overtime Simulation Scenarios</h2>
-              <div className="grid gap-6 md:grid-cols-3">
-                {/* Scenario A */}
-                <div className="rounded-3xl border border-red-500/40 bg-red-500/10 p-6 flex flex-col justify-between">
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-lg font-bold text-[var(--ec-foreground)]">Scenario A (No OT)</h3>
-                      <span className="rounded-full bg-red-600 px-2.5 py-0.5 text-xs font-semibold text-white">Delay Risk</span>
-                    </div>
-                    <p className="mt-2 text-xs font-semibold text-[var(--ec-muted)]">Strict limit to standard 8-hour shift. No overtime allowed.</p>
-                    
-                    <div className="mt-6 space-y-3 border-t border-red-500/20 pt-4">
-                      <div className="flex justify-between text-sm">
-                        <span className="font-medium text-[var(--ec-muted)]">Total Days:</span>
-                        <span className="font-bold text-[var(--ec-foreground)]">{simResultA.totalDays} Days</span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="font-medium text-[var(--ec-muted)]">Shift Length:</span>
-                        <span className="font-semibold text-[var(--ec-foreground)]">8h Max / day</span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="font-medium text-[var(--ec-muted)]">Overtime Hours:</span>
-                        <span className="font-semibold text-[var(--ec-foreground)]">0h</span>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="mt-6 rounded-2xl bg-red-500/15 p-3 text-xs font-semibold text-[var(--ec-foreground)] leading-relaxed border border-red-500/30">
-                    ⚠️ Batch takes {simResultA.totalDays} days. High delivery delay risk due to strict 8h limitation.
-                  </div>
-                </div>
+                        {/* Selected Horizon Primary Output Highlight */}
+                        <div className="p-3 rounded-xl bg-gradient-to-br from-[var(--ec-card)] to-[var(--ec-surface)] border border-[var(--ec-border)]/80 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--ec-muted)]">
+                              {horizonLabel} Fill:
+                            </span>
+                            <span className={`text-xs font-black px-2 py-0.5 rounded-md ${
+                              horizonPct >= 100
+                                ? 'bg-emerald-500/20 text-emerald-300'
+                                : 'bg-cyan-500/20 text-cyan-300'
+                            }`}>
+                              {horizonPct}% Filled
+                            </span>
+                          </div>
 
-                {/* Scenario B */}
-                <div className="rounded-3xl border border-amber-500/40 bg-amber-500/10 p-6 flex flex-col justify-between">
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-lg font-bold text-[var(--ec-foreground)]">Scenario B (Med OT)</h3>
-                      <span className="rounded-full bg-amber-600 px-2.5 py-0.5 text-xs font-semibold text-white">Moderate</span>
-                    </div>
-                    <p className="mt-2 text-xs font-semibold text-[var(--ec-muted)]">Allow up to 2 hours of overtime per worker daily (10h max shift).</p>
-                    
-                    <div className="mt-6 space-y-3 border-t border-amber-500/20 pt-4">
-                      <div className="flex justify-between text-sm">
-                        <span className="font-medium text-[var(--ec-muted)]">Total Days:</span>
-                        <span className="font-bold text-[var(--ec-foreground)]">{simResultB.totalDays} Days</span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="font-medium text-[var(--ec-muted)]">Shift Length:</span>
-                        <span className="font-semibold text-[var(--ec-foreground)]">10h Max / day</span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="font-medium text-[var(--ec-muted)]">Overtime Hours:</span>
-                        <span className="font-semibold text-[var(--ec-foreground)]">{simResultB.totalOvertimeHours}h</span>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="mt-6 rounded-2xl bg-amber-500/15 p-3 text-xs font-semibold text-[var(--ec-foreground)] leading-relaxed border border-amber-500/30">
-                    💡 Saves days compared to Scenario A. Overtime required is {simResultB.totalOvertimeHours} hours.
-                  </div>
-                </div>
+                          <div className="flex items-baseline justify-between gap-1">
+                            <span className="text-lg sm:text-xl font-black text-cyan-400">
+                              {horizonActual.toLocaleString()}
+                            </span>
+                            <span className="text-xs text-[var(--ec-muted)] font-semibold">
+                              Target: <strong className="text-[var(--ec-foreground)]">{horizonTarget.toLocaleString()}</strong> {selectedOrder.unit || defaultProductionUnit}
+                            </span>
+                          </div>
 
-                {/* Scenario C */}
-                <div className="rounded-3xl border border-cyan-500/40 bg-cyan-500/10 p-6 flex flex-col justify-between">
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-lg font-bold text-[var(--ec-foreground)]">Scenario C (Max OT)</h3>
-                      <span className="rounded-full bg-cyan-600 px-2.5 py-0.5 text-xs font-semibold text-white">Safe / Fast</span>
-                    </div>
-                    <p className="mt-2 text-xs font-semibold text-[var(--ec-muted)]">Allow max allowable overtime of 4 hours daily (12h max shift).</p>
-                    
-                    <div className="mt-6 space-y-3 border-t border-cyan-500/20 pt-4">
-                      <div className="flex justify-between text-sm">
-                        <span className="font-medium text-[var(--ec-muted)]">Total Days:</span>
-                        <span className="font-bold text-[var(--ec-foreground)]">{simResultC.totalDays} Days</span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="font-medium text-[var(--ec-muted)]">Shift Length:</span>
-                        <span className="font-semibold text-[var(--ec-foreground)]">12h Max / day</span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="font-medium text-[var(--ec-muted)]">Overtime Hours:</span>
-                        <span className="font-semibold text-[var(--ec-foreground)]">{simResultC.totalOvertimeHours}h</span>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="mt-6 rounded-2xl bg-cyan-500/15 p-3 text-xs font-semibold text-[var(--ec-foreground)] leading-relaxed border border-cyan-500/30">
-                    🚀 Fast-track path. Achieves minimum schedule length of {simResultC.totalDays} days with {simResultC.totalOvertimeHours}h OT.
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* 4. Timeline Visual Panel */}
-            <div className="rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-card)] p-6">
-              <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--ec-border)] pb-4">
-                <div>
-                  <h2 className="text-xl font-semibold text-[var(--ec-foreground)]">Batch Timeline & OT Priority (Scenario C)</h2>
-                  <p className="mt-1 text-sm text-[var(--ec-muted)]">
-                    Sequential back-to-back scheduling of orders. Max OT (4h/day) utilized sequentially to complete batch on time.
-                  </p>
-                </div>
-                <div className="flex items-center gap-4">
-                  <label className="text-sm font-semibold text-[var(--ec-muted)] flex items-center gap-2">
-                    Deadline:
-                    <input
-                      type="range"
-                      min="1"
-                      max="7"
-                      value={simTargetDeadline}
-                      onChange={(e) => setSimTargetDeadline(Number(e.target.value))}
-                      className="accent-cyan-500 w-28"
-                    />
-                    <span className="text-[var(--ec-primary)] font-bold">{simTargetDeadline} Days</span>
-                  </label>
-                </div>
-              </div>
-
-              {/* Summary Stats */}
-              <div className="mt-6 grid gap-4 grid-cols-2 md:grid-cols-4">
-                <div className="rounded-2xl bg-[var(--ec-surface)] p-4 text-center">
-                  <p className="text-xs text-[var(--ec-muted)]">Total Batch Duration</p>
-                  <p className="mt-1 text-2xl font-semibold text-[var(--ec-foreground)]">{simResultC.totalDays} Days</p>
-                </div>
-                <div className="rounded-2xl bg-[var(--ec-surface)] p-4 text-center">
-                  <p className="text-xs text-[var(--ec-muted)]">Total Required Hours</p>
-                  <p className="mt-1 text-2xl font-semibold text-[var(--ec-foreground)]">{simResultC.totalHours} hrs</p>
-                </div>
-                <div className="rounded-2xl bg-[var(--ec-surface)] p-4 text-center">
-                  <p className="text-xs text-[var(--ec-muted)]">Regular Hours Spent</p>
-                  <p className="mt-1 text-2xl font-semibold text-[var(--ec-foreground)]">{simResultC.totalRegularHours} hrs</p>
-                </div>
-                <div className="rounded-2xl bg-[var(--ec-surface)] p-4 text-center">
-                  <p className="text-xs text-[var(--ec-muted)]">Overtime Hours Spent</p>
-                  <p className="mt-1 text-2xl font-semibold text-[var(--ec-foreground)]">{simResultC.totalOvertimeHours} hrs</p>
-                </div>
-              </div>
-
-              {/* Day-by-Day Horizontal Timeline Visual */}
-              <div className="mt-8 space-y-4">
-                <div className="flex items-center justify-between text-xs text-[var(--ec-muted)] pb-1">
-                  <span>Day Timeline Visualization (12 hours capacity per day)</span>
-                  <div className="flex items-center gap-4">
-                    <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-cyan-500/20 border border-cyan-500/40"></span> Regular Shift (0-8h)</span>
-                    <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-amber-500/20 border border-amber-500/40"></span> Overtime Shift (8-12h)</span>
-                  </div>
-                </div>
-
-                {simResultC.days.map((day) => (
-                  <div key={day.dayNumber} className="relative">
-                    <div className="flex items-center gap-3">
-                      <span className="w-16 text-xs font-semibold text-[var(--ec-muted)]">Day {day.dayNumber}</span>
-                      
-                      {/* Progress bar container */}
-                      <div className="flex-1 h-10 rounded-xl bg-[var(--ec-surface)] overflow-hidden flex border border-[var(--ec-border)] relative">
-                        
-                        {/* 8 Hours regular shift dividing line */}
-                        <div className="absolute top-0 bottom-0 left-[66.67%] border-l border-dashed border-[var(--ec-border)] z-10"></div>
-                        
-                        {day.allocs.map((alloc, idx) => {
-                          const widthPercent = (alloc.hours / 12) * 100;
-                          const isRegular = alloc.type === 'regular';
-                          const bgClass = isRegular 
-                            ? 'bg-cyan-500/25 hover:bg-cyan-500/35 text-[var(--ec-foreground)] border-r border-[var(--ec-border)]' 
-                            : 'bg-amber-500/25 hover:bg-amber-500/35 text-[var(--ec-foreground)] border-r border-[var(--ec-border)]';
-                          
-                          return (
+                          {/* Progress Bar */}
+                          <div className="w-full bg-[var(--ec-surface)] h-2 rounded-full overflow-hidden border border-[var(--ec-border)]/60">
                             <div
-                              key={idx}
-                              style={{ width: `${widthPercent}%` }}
-                              className={`h-full flex flex-col justify-center px-2 text-[10px] truncate leading-tight font-medium transition-all ${bgClass}`}
-                              title={`${alloc.orderNumber} - ${alloc.hours} hrs (${alloc.type})`}
-                            >
-                              <span className="font-bold truncate">{alloc.orderNumber}</span>
-                              <span className="opacity-75">{alloc.hours}h ({alloc.type})</span>
-                            </div>
-                          );
-                        })}
+                              className={`h-full rounded-full transition-all duration-500 ${
+                                horizonPct >= 100
+                                  ? 'bg-emerald-400'
+                                  : 'bg-gradient-to-r from-blue-500 to-cyan-400'
+                              }`}
+                              style={{ width: `${Math.min(100, horizonPct)}%` }}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Quick 3-Horizon Mini Reference Grid */}
+                        <div className="grid grid-cols-3 gap-1.5 p-1.5 rounded-lg bg-[var(--ec-card)]/60 border border-[var(--ec-border)]/40 text-center text-[10px]">
+                          <div className={`p-1 rounded ${targetHorizonFilter === 'daily' ? 'bg-cyan-500/10 font-bold text-cyan-400' : 'text-[var(--ec-muted)]'}`}>
+                            <span className="block text-[8px] uppercase">Daily</span>
+                            <span>{metrics.todayActual}/{metrics.dailyTarget}</span>
+                          </div>
+
+                          <div className={`p-1 rounded ${targetHorizonFilter === 'weekly' ? 'bg-blue-500/10 font-bold text-blue-400' : 'text-[var(--ec-muted)]'}`}>
+                            <span className="block text-[8px] uppercase">Weekly</span>
+                            <span>{metrics.weekActual}/{metrics.weeklyTarget}</span>
+                          </div>
+
+                          <div className={`p-1 rounded ${targetHorizonFilter === 'monthly' ? 'bg-emerald-500/10 font-bold text-emerald-400' : 'text-[var(--ec-muted)]'}`}>
+                            <span className="block text-[8px] uppercase">Total</span>
+                            <span>{metrics.totalActual}/{metrics.totalTarget}</span>
+                          </div>
+                        </div>
+
+                        {/* Due & Shortfall Box */}
+                        <div className="flex items-center justify-between p-2 rounded-lg bg-gradient-to-r from-rose-500/10 via-amber-500/5 to-transparent border border-rose-500/20 text-xs">
+                          <div>
+                            <span className="text-[9px] font-bold text-slate-400 block uppercase">
+                              {horizonDueLabel}:
+                            </span>
+                            <span className={`text-xs font-black ${horizonDue > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                              {horizonDue > 0 ? `${horizonDue.toLocaleString()} ${selectedOrder.unit || defaultProductionUnit} due` : '✓ Target Reached'}
+                            </span>
+                          </div>
+
+                          <div className="text-right">
+                            <span className="text-[9px] font-bold text-slate-400 block">Total Due:</span>
+                            <span className="text-xs font-black text-rose-400">
+                              {metrics.totalDue.toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
                       </div>
-                      
-                      <span className="w-20 text-right text-xs font-medium text-[var(--ec-muted)]">
-                        {Number(day.regularTotal + day.overtimeTotal).toFixed(1)} / 12h
-                      </span>
-                    </div>
-                  </div>
-                ))}
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* TAB 2: CROSS-SECTION BOTTLENECK MATRIX */}
+      {/* ------------------------------------------------------------- */}
+      {activeTab === 'matrix' && (
+        <div className="space-y-3">
+          <div className="rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-card)] p-3.5 sm:p-4 shadow-sm space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="font-extrabold text-sm sm:text-base text-[var(--ec-foreground)] flex items-center gap-2">
+                  <Layers className="h-4 w-4 text-cyan-400" />
+                  <span>All Orders × Department Matrix</span>
+                </h3>
+                <p className="text-[10px] sm:text-xs text-[var(--ec-muted)]">
+                  Search by Order # or Article Name to view department targets, completed output, and bottlenecks.
+                </p>
+              </div>
+
+              {/* Matrix Search Input Bar */}
+              <div className="relative w-full sm:w-80">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-cyan-400" />
+                <input
+                  type="text"
+                  value={matrixSearchQuery}
+                  onChange={(e) => setMatrixSearchQuery(e.target.value)}
+                  placeholder="Search Order #, Article, Buyer..."
+                  className="w-full rounded-xl border border-cyan-500/30 bg-[var(--ec-surface)] pl-9 pr-8 py-2 text-xs text-[var(--ec-foreground)] placeholder-[var(--ec-muted)] focus:outline-none focus:border-cyan-500 shadow-sm"
+                />
+                {matrixSearchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setMatrixSearchQuery('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-[var(--ec-muted)] hover:text-white"
+                  >
+                    ✕
+                  </button>
+                )}
               </div>
             </div>
 
-            {/* 5. Per-Order Summary Details */}
-            <div className="rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-card)] p-6">
-              <h2 className="text-xl font-semibold text-[var(--ec-foreground)]">Per-Order Simulation Summary (Scenario C)</h2>
-              <p className="mt-1 text-sm text-[var(--ec-muted)]">
-                Estimated completion timeline and specific overtime hours allocated per order.
-              </p>
+            {matrixSearchQuery && (
+              <div className="flex items-center justify-between text-xs text-cyan-400 font-semibold pt-1 border-t border-[var(--ec-border)]/60">
+                <span>Filtered Results: {filteredMatrixOrders.length} order(s) found</span>
+                <button
+                  type="button"
+                  onClick={() => setMatrixSearchQuery('')}
+                  className="text-[11px] text-[var(--ec-muted)] hover:underline"
+                >
+                  Clear Search
+                </button>
+              </div>
+            )}
+          </div>
 
-              <div className="mt-6 overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead>
-                    <tr className="border-b border-[var(--ec-border)] text-[var(--ec-muted)]">
-                      <th className="pb-3 font-semibold">Order</th>
-                      <th className="pb-3 font-semibold text-right">Qty</th>
-                      <th className="pb-3 font-semibold text-right">Production Rate</th>
-                      <th className="pb-3 font-semibold text-right">Total Hours</th>
-                      <th className="pb-3 font-semibold text-right">Regular Hours</th>
-                      <th className="pb-3 font-semibold text-right text-[var(--ec-foreground)]">Overtime Hours</th>
-                      <th className="pb-3 font-semibold text-right">Completion Time</th>
-                      <th className="pb-3 text-center">Shipment Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {simResultC.orders.map((o) => {
-                      const isOnTime = o.endDay <= simTargetDeadline;
-                      return (
-                        <tr key={o.id} className="border-b border-[var(--ec-border)] hover:bg-[var(--ec-surface)]/20">
-                          <td className="py-4">
-                            <p className="font-semibold text-[var(--ec-foreground)]">{o.orderNumber}</p>
-                            <p className="text-xs text-[var(--ec-muted)]">{simOrders.find(so => so.id === o.id)?.style || 'Standard'}</p>
-                          </td>
-                          <td className="py-4 text-right text-[var(--ec-muted)]">{o.quantity.toLocaleString()} pairs</td>
-                          <td className="py-4 text-right text-[var(--ec-muted)]">{o.rate} / hr</td>
-                          <td className="py-4 text-right font-medium text-[var(--ec-foreground)]">{o.reqHours}h</td>
-                          <td className="py-4 text-right text-[var(--ec-muted)]">{o.regularHours}h</td>
-                          <td className="py-4 text-right text-[var(--ec-foreground)] font-semibold">{o.overtimeHours}h</td>
-                          <td className="py-4 text-right">
-                            <span className="font-semibold text-[var(--ec-foreground)]">Day {o.endDay}</span>
-                            <span className="text-xs text-[var(--ec-muted)]"> (Hour {o.endHour})</span>
-                          </td>
-                          <td className="py-4 text-center">
-                            {isOnTime ? (
-                              <span className="rounded-full bg-cyan-500/20 border border-cyan-500/50 px-2.5 py-0.5 text-xs font-bold text-[var(--ec-foreground)]">
-                                ✓ On Time
-                              </span>
-                            ) : (
-                              <span className="rounded-full bg-red-500/20 border border-red-500/50 px-2.5 py-0.5 text-xs font-bold text-[var(--ec-foreground)]">
-                                ⚠ Delay Risk
+          <div className="rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-card)] overflow-x-auto shadow-sm">
+            <table className="w-full text-left text-xs border-collapse min-w-[750px]">
+              <thead>
+                <tr className="bg-[var(--ec-surface)] border-b border-[var(--ec-border)] text-[10px] font-extrabold text-[var(--ec-muted)] uppercase tracking-wider">
+                  <th className="p-3">Order / Article / Buyer</th>
+                  <th className="p-3">Total Qty</th>
+                  {validDeptNames.map((dept) => (
+                    <th key={dept} className="p-3 text-center">{dept}</th>
+                  ))}
+                  <th className="p-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--ec-border)]">
+                {filteredMatrixOrders.length === 0 ? (
+                  <tr>
+                    <td colSpan={validDeptNames.length + 3} className="p-8 text-center text-xs text-[var(--ec-muted)]">
+                      No orders found matching "{matrixSearchQuery}". Try another Order # or Article name.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredMatrixOrders.map((order) => {
+                    const plan = getOrderPlan(order);
+                    return (
+                      <tr key={order.id} className="hover:bg-[var(--ec-surface)]/50 transition">
+                        <td className="p-3 space-y-1">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-mono font-black text-cyan-400 text-xs">
+                              #{order.orderNumber}
+                            </span>
+                            {order.articleName && (
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 truncate max-w-[120px]">
+                                {order.articleName}
                               </span>
                             )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                          </div>
+                          <div className="font-bold text-[var(--ec-foreground)] text-[11px] truncate max-w-[150px]">
+                            {order.buyerName}
+                          </div>
+                        </td>
+
+                        <td className="p-3 font-black text-[var(--ec-foreground)] whitespace-nowrap text-xs">
+                          {order.quantity} <span className="text-[9px] font-normal text-[var(--ec-muted)]">{order.unit || defaultProductionUnit}</span>
+                        </td>
+
+                        {validDeptNames.map((dept) => {
+                          const sTarget = plan.sections[dept];
+                          const isRequired = !order.requiredDepartments || order.requiredDepartments.length === 0 || order.requiredDepartments.includes(dept);
+
+                          if (!isRequired) {
+                            return (
+                              <td key={dept} className="p-2 text-center text-[var(--ec-muted)] text-[10px]">
+                                —
+                              </td>
+                            );
+                          }
+
+                          const metrics = getOrderDeptMetrics(order.id, dept, sTarget);
+
+                          return (
+                            <td key={dept} className="p-1.5 text-center">
+                              <div className={`p-1.5 rounded-lg border text-[10px] space-y-0.5 ${
+                                metrics.status === 'Completed'
+                                  ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-300'
+                                  : metrics.totalDue > 0
+                                  ? 'bg-rose-500/10 border-rose-500/25 text-rose-300'
+                                  : 'bg-[var(--ec-surface)] border-[var(--ec-border)] text-[var(--ec-foreground)]'
+                              }`}>
+                                <div className="font-black">
+                                  {metrics.totalActual} / {metrics.totalTarget}
+                                </div>
+                                <div className="text-[9px] font-bold text-cyan-400">
+                                  {metrics.totalPct}%
+                                </div>
+                                {metrics.totalDue > 0 && (
+                                  <div className="text-[9px] font-black text-rose-400">
+                                    Due: {metrics.totalDue}
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+                          );
+                        })}
+
+                        <td className="p-3 text-right whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditPlan(order)}
+                            className="px-2.5 py-1 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/25 text-[11px] font-bold transition"
+                          >
+                            Edit
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* TAB 3: TIMELINE SIMULATOR */}
+      {/* ------------------------------------------------------------- */}
+      {activeTab === 'simulator' && (
+        <div className="rounded-2xl sm:rounded-3xl border border-[var(--ec-border)] bg-[var(--ec-card)] p-3.5 sm:p-5 shadow-sm space-y-4">
+          <div>
+            <h3 className="text-sm sm:text-base font-black text-[var(--ec-foreground)] flex items-center gap-1.5">
+              <Zap className="h-4 w-4 text-cyan-400" />
+              Timeline & Forecast
+            </h3>
+            <p className="text-[10px] sm:text-xs text-[var(--ec-muted)]">
+              Estimated lead times based on daily target allocations.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+            {uniqueOrders.map((order) => {
+              const plan = getOrderPlan(order);
+              const totalQty = order.quantity || 1000;
+              const depts = Object.keys(plan.sections);
+
+              const dailyPaces = depts.map((d) => plan.sections[d]?.dailyTarget || 500);
+              const minDailyPace = Math.max(1, Math.min(...dailyPaces));
+              const estWorkingDays = Math.ceil(totalQty / minDailyPace);
+
+              const estDate = new Date();
+              estDate.setDate(estDate.getDate() + estWorkingDays);
+
+              return (
+                <div key={order.id} className="rounded-xl border border-[var(--ec-border)] bg-[var(--ec-surface)] p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono font-black text-xs text-cyan-400">
+                      #{order.orderNumber}
+                    </span>
+                    <span className="text-[10px] font-black text-amber-400">
+                      ~{estWorkingDays} days
+                    </span>
+                  </div>
+
+                  <div>
+                    <h4 className="font-bold text-xs text-[var(--ec-foreground)] truncate">{order.buyerName}</h4>
+                    <p className="text-[10px] text-[var(--ec-muted)]">
+                      Total: <strong>{totalQty} {order.unit || defaultProductionUnit}</strong>
+                    </p>
+                  </div>
+
+                  <div className="p-2 rounded-lg bg-[var(--ec-card)] border border-[var(--ec-border)] text-[10px] space-y-0.5">
+                    <div className="flex justify-between">
+                      <span className="text-[var(--ec-muted)]">Rate:</span>
+                      <strong className="text-cyan-400">{minDailyPace}/d</strong>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[var(--ec-muted)]">Forecast:</span>
+                      <strong className="text-emerald-400">{estDate.toLocaleDateString([], { day: 'numeric', month: 'short' })}</strong>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* FULLY RESPONSIVE MODAL: EDIT PRODUCTION PLAN */}
+      {/* ------------------------------------------------------------- */}
+      {editingPlanOrder && (
+        <div
+          onClick={() => setEditingPlanOrder(null)}
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-0 sm:p-4 animate-fadeIn"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative max-w-2xl w-full bg-[var(--ec-card)] border border-cyan-500/40 rounded-t-3xl sm:rounded-3xl overflow-hidden shadow-2xl p-4 sm:p-6 space-y-4 max-h-[85vh] flex flex-col"
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--ec-border)] flex-shrink-0">
+              <div className="space-y-0.5">
+                <span className="text-[9px] font-black uppercase tracking-wider text-cyan-400">
+                  CONFIGURE TARGETS
+                </span>
+                <h3 className="text-base sm:text-lg font-black text-[var(--ec-foreground)] truncate">
+                  Order #{editingPlanOrder.orderNumber} ({editingPlanOrder.buyerName})
+                </h3>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setEditingPlanOrder(null)}
+                className="w-7 h-7 rounded-full bg-[var(--ec-surface)] hover:bg-red-500/20 text-[var(--ec-muted)] hover:text-red-400 text-xs font-bold transition flex items-center justify-center"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Unified Batch Controller Toolbar */}
+            <div className="p-3 rounded-2xl bg-gradient-to-r from-blue-600/10 via-cyan-500/10 to-indigo-600/10 border border-cyan-500/30 space-y-2.5 flex-shrink-0">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Sparkles className="h-4 w-4 text-cyan-400 flex-shrink-0" />
+                  <div>
+                    <span className="text-xs font-black text-[var(--ec-foreground)] block">
+                      Bulk Target Setter (All Sections At Once)
+                    </span>
+                    <span className="text-[10px] text-[var(--ec-muted)]">
+                      Total Order Quantity: <strong className="text-cyan-400">{editingPlanOrder.quantity} {editingPlanOrder.unit || defaultProductionUnit}</strong>
+                    </span>
+                  </div>
+                </div>
+
+                {/* Auto distribute across days */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <div className="flex items-center gap-1 bg-[var(--ec-surface)] px-2.5 py-1.5 rounded-xl border border-[var(--ec-border)]">
+                    <span className="text-[10px] text-[var(--ec-muted)] font-bold">Target Days:</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="100"
+                      value={autoDistributeDays}
+                      onChange={(e) => setAutoDistributeDays(Number(e.target.value) || 1)}
+                      className="w-9 bg-transparent text-xs font-black text-cyan-400 focus:outline-none text-center"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleApplyAutoDistribute}
+                    className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white text-xs font-black transition shadow-sm"
+                  >
+                    Distribute to All
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* UNIFIED ALL-SECTIONS SIMULTANEOUS EDIT MATRIX */}
+            <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 -mr-1">
+              <div className="flex items-center justify-between pb-1">
+                <span className="text-xs font-black text-cyan-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <Layers className="h-3.5 w-3.5" />
+                  All Sections Plan Grid ({Object.keys(editSections).length} sections)
+                </span>
+                <span className="text-[10px] text-[var(--ec-muted)]">
+                  Edit any section directly below
+                </span>
+              </div>
+
+              {Object.keys(editSections).map((dept) => {
+                const s = editSections[dept];
+                return (
+                  <div
+                    key={dept}
+                    className="p-3 rounded-2xl bg-[var(--ec-surface)] border border-[var(--ec-border)] hover:border-cyan-500/40 transition space-y-2.5 shadow-sm"
+                  >
+                    {/* Section Row Header */}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-6 h-6 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 flex items-center justify-center font-black text-[10px]">
+                          {dept.slice(0, 2).toUpperCase()}
+                        </div>
+                        <span className="font-extrabold text-xs sm:text-sm text-[var(--ec-foreground)] truncate">
+                          {dept}
+                        </span>
+                      </div>
+
+                      {/* Quick copy order qty to this section total */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const qty = editingPlanOrder.quantity || 1000;
+                          const daily = Math.ceil(qty / (autoDistributeDays || 10));
+                          setEditSections((prev) => ({
+                            ...prev,
+                            [dept]: {
+                              ...prev[dept],
+                              dailyTarget: daily,
+                              weeklyTarget: daily * DEFAULT_WORKING_DAYS_PER_WEEK,
+                              totalTarget: qty,
+                              monthlyTarget: qty,
+                            },
+                          }));
+                        }}
+                        className="text-[10px] font-bold text-cyan-400 hover:text-cyan-300 px-2 py-0.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20"
+                      >
+                        Reset to Default
+                      </button>
+                    </div>
+
+                    {/* Inputs in a clean responsive 4-column grid */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {/* Daily Target */}
+                      <div>
+                        <label className="block text-[9px] font-bold text-[var(--ec-muted)] uppercase mb-0.5">
+                          Daily Target (/day)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={s.dailyTarget || ''}
+                          onChange={(e) => {
+                            const val = Number(e.target.value) || 0;
+                            setEditSections((prev) => ({
+                              ...prev,
+                              [dept]: {
+                                ...prev[dept],
+                                dailyTarget: val,
+                                weeklyTarget: val * DEFAULT_WORKING_DAYS_PER_WEEK,
+                              },
+                            }));
+                          }}
+                          placeholder="0"
+                          className="w-full rounded-xl border border-[var(--ec-border)] bg-[var(--ec-card)] px-2.5 py-1.5 text-xs font-black text-cyan-400 focus:outline-none focus:border-cyan-500"
+                        />
+                      </div>
+
+                      {/* Weekly Target */}
+                      <div>
+                        <label className="block text-[9px] font-bold text-[var(--ec-muted)] uppercase mb-0.5">
+                          Weekly Target (/wk)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={s.weeklyTarget || ''}
+                          onChange={(e) => {
+                            const val = Number(e.target.value) || 0;
+                            setEditSections((prev) => ({
+                              ...prev,
+                              [dept]: {
+                                ...prev[dept],
+                                weeklyTarget: val,
+                              },
+                            }));
+                          }}
+                          placeholder="0"
+                          className="w-full rounded-xl border border-[var(--ec-border)] bg-[var(--ec-card)] px-2.5 py-1.5 text-xs font-black text-blue-400 focus:outline-none focus:border-cyan-500"
+                        />
+                      </div>
+
+                      {/* Total Target */}
+                      <div>
+                        <label className="block text-[9px] font-bold text-[var(--ec-muted)] uppercase mb-0.5">
+                          Total Target (Order)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={s.totalTarget || ''}
+                          onChange={(e) => {
+                            const val = Number(e.target.value) || 0;
+                            setEditSections((prev) => ({
+                              ...prev,
+                              [dept]: {
+                                ...prev[dept],
+                                totalTarget: val,
+                                monthlyTarget: val,
+                              },
+                            }));
+                          }}
+                          placeholder="0"
+                          className="w-full rounded-xl border border-[var(--ec-border)] bg-[var(--ec-card)] px-2.5 py-1.5 text-xs font-black text-emerald-400 focus:outline-none focus:border-cyan-500"
+                        />
+                      </div>
+
+                      {/* Manpower & Shift */}
+                      <div>
+                        <label className="block text-[9px] font-bold text-[var(--ec-muted)] uppercase mb-0.5">
+                          Workers • Shift Hours
+                        </label>
+                        <div className="grid grid-cols-2 gap-1">
+                          <input
+                            type="number"
+                            min="1"
+                            value={s.manpower || 12}
+                            onChange={(e) => {
+                              const val = Number(e.target.value) || 1;
+                              setEditSections((prev) => ({
+                                ...prev,
+                                [dept]: {
+                                  ...prev[dept],
+                                  manpower: val,
+                                },
+                              }));
+                            }}
+                            title="Workers"
+                            className="w-full rounded-xl border border-[var(--ec-border)] bg-[var(--ec-card)] px-1.5 py-1.5 text-xs font-bold text-center text-[var(--ec-foreground)] focus:outline-none focus:border-cyan-500"
+                          />
+                          <input
+                            type="number"
+                            min="1"
+                            max="24"
+                            value={s.workingHours || 8}
+                            onChange={(e) => {
+                              const val = Number(e.target.value) || 8;
+                              setEditSections((prev) => ({
+                                ...prev,
+                                [dept]: {
+                                  ...prev[dept],
+                                  workingHours: val,
+                                },
+                              }));
+                            }}
+                            title="Working hours"
+                            className="w-full rounded-xl border border-[var(--ec-border)] bg-[var(--ec-card)] px-1.5 py-1.5 text-xs font-bold text-center text-[var(--ec-foreground)] focus:outline-none focus:border-cyan-500"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Modal Footer Actions */}
+            <div className="flex items-center justify-between gap-2 pt-3 border-t border-[var(--ec-border)] flex-shrink-0">
+              <span className="text-[11px] text-[var(--ec-muted)] hidden sm:inline">
+                Saves all section targets simultaneously.
+              </span>
+
+              <div className="flex items-center gap-2 ml-auto">
+                <button
+                  type="button"
+                  onClick={() => setEditingPlanOrder(null)}
+                  className="px-4 py-2 rounded-xl border border-[var(--ec-border)] bg-[var(--ec-surface)] text-xs font-bold text-[var(--ec-muted)]"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleSavePlan}
+                  disabled={isSavingPlan}
+                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white text-xs font-black transition flex items-center gap-1.5 shadow-lg shadow-cyan-500/25 disabled:opacity-50"
+                >
+                  {isSavingPlan ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                  <span>Save All Sections</span>
+                </button>
               </div>
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

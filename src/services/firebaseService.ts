@@ -19,6 +19,7 @@ import type {
   FinishedGoods,
   WarehouseStock,
   MaterialReceival,
+  OrderProductionPlan,
 } from '@/types';
 
 // Generic subscription helper
@@ -239,6 +240,16 @@ export const firebaseService = {
     const id = rec.id || `mr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     return saveDocument('materialReceivals', id, { ...rec, id });
   },
+
+  // Production Plans
+  getProductionPlans: () => getCollectionData<OrderProductionPlan>('productionPlans'),
+  subscribeProductionPlans: (callback: (data: OrderProductionPlan[]) => void) =>
+    subscribeToCollection<OrderProductionPlan>('productionPlans', callback),
+  saveProductionPlan: (plan: OrderProductionPlan) => {
+    const id = plan.id || `plan_${plan.orderId || Date.now()}`;
+    return saveDocument('productionPlans', id, { ...plan, id });
+  },
+  deleteProductionPlan: (id: string) => removeDocument('productionPlans', id),
 
   // Settings
   subscribeSettings: <T>(settingKey: string, callback: (data: T | null) => void) =>

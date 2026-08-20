@@ -206,6 +206,34 @@ export interface User {
   avatar?: string;
 }
 
+export interface SectionPlanTarget {
+  department: string;
+  dailyTarget: number;
+  weeklyTarget?: number;
+  monthlyTarget?: number;
+  totalTarget?: number;
+  startDate?: string;
+  targetDeliveryDate?: string;
+  manpower?: number;
+  workingHours?: number;
+  notes?: string;
+}
+
+export interface OrderProductionPlan {
+  id: ID;
+  orderId: ID;
+  orderNumber: string;
+  buyerName?: string;
+  articleName?: string;
+  totalQuantity: number;
+  unit?: string;
+  startDate?: string;
+  targetDeliveryDate?: string;
+  sections: Record<string, SectionPlanTarget>;
+  status?: 'Planned' | 'In Progress' | 'On Track' | 'Delayed' | 'Completed';
+  updatedAt: string;
+}
+
 export type {
   DynamicEntity,
   DynamicEntityType,

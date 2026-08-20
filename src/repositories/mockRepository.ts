@@ -27,12 +27,16 @@ import type {
   MaterialReceival,
   Article,
   BuyerOrder,
+  OrderProductionPlan,
 } from '@/types';
+
+const defaultProductionPlans: OrderProductionPlan[] = [];
 
 const STORAGE_KEYS = {
   buyers: 'ec-buyers',
   buyerOrders: 'ec-buyer-orders',
   productionFlows: 'ec-production-flows',
+  productionPlans: 'ec-production-plans',
   finishedGoods: 'ec-finished-goods',
   warehouseStocks: 'ec-warehouse-stocks',
   materialReceivals: 'ec-material-receivals',
@@ -78,6 +82,7 @@ export class MockRepository {
     hydrateList(STORAGE_KEYS.buyers, buyers);
     hydrateList(STORAGE_KEYS.buyerOrders, buyerOrders);
     hydrateList(STORAGE_KEYS.productionFlows, productionFlows);
+    hydrateList(STORAGE_KEYS.productionPlans, defaultProductionPlans);
     hydrateList(STORAGE_KEYS.finishedGoods, finishedGoods);
     hydrateList(STORAGE_KEYS.warehouseStocks, warehouseStocks);
     hydrateList(STORAGE_KEYS.materialReceivals, materialReceivals);
@@ -97,6 +102,7 @@ export class MockRepository {
   private persistBuyers() { this.persist(STORAGE_KEYS.buyers, buyers); }
   private persistBuyerOrders() { this.persist(STORAGE_KEYS.buyerOrders, buyerOrders); }
   private persistProductionFlows() { this.persist(STORAGE_KEYS.productionFlows, productionFlows); }
+  private persistProductionPlans() { this.persist(STORAGE_KEYS.productionPlans, defaultProductionPlans); }
   private persistFinishedGoods() { this.persist(STORAGE_KEYS.finishedGoods, finishedGoods); }
   private persistWarehouseStocks() { this.persist(STORAGE_KEYS.warehouseStocks, warehouseStocks); }
   private persistMaterialReceivals() { this.persist(STORAGE_KEYS.materialReceivals, materialReceivals); }
@@ -148,8 +154,16 @@ export class MockRepository {
 
   setProductionFlows(list: ProductionFlow[]) {
     this.ensureHydrated();
+    const seen = new Set<string>();
+    const deduped: ProductionFlow[] = [];
+    for (const f of list) {
+      if (f.id && !seen.has(f.id)) {
+        seen.add(f.id);
+        deduped.push(f);
+      }
+    }
     productionFlows.length = 0;
-    productionFlows.push(...list);
+    productionFlows.push(...deduped);
     this.persistProductionFlows();
   }
 
@@ -246,18 +260,30 @@ export class MockRepository {
   // Mutating methods
   addProductionFlow(flow: ProductionFlow): ProductionFlow {
     this.ensureHydrated();
+    
+    // 1. Check if same ID already exists
+    const existingIndex = productionFlows.findIndex((f) => f.id === flow.id);
+    if (existingIndex !== -1) {
+      productionFlows[existingIndex] = flow;
+      this.persistProductionFlows();
+      return flow;
+    }
+
+    // 2. Check for duplicate submission within 3 seconds
     try {
       const fTime = flow.updatedAt ? new Date(flow.updatedAt).getTime() : Date.now();
-      const existing = productionFlows.find((f) => {
+      const duplicate = productionFlows.find((f) => {
         if (f.orderId !== flow.orderId) return false;
         if (f.department !== flow.department) return false;
+        if ((f.processName || '') !== (flow.processName || '')) return false;
         if (f.completed !== flow.completed) return false;
         const existingTime = f.updatedAt ? new Date(f.updatedAt).getTime() : 0;
-        return Math.abs(fTime - existingTime) < 5000;
+        return Math.abs(fTime - existingTime) < 3000;
       });
-      if (existing) return existing;
+      if (duplicate) return duplicate;
     } catch (e) {}
-    productionFlows.push(flow);
+
+    productionFlows.unshift(flow);
     this.persistProductionFlows();
     return flow;
   }
@@ -431,6 +457,41 @@ export class MockRepository {
     finishedGoods.length = 0;
     this.persistFinishedGoods();
     return count;
+  }
+
+  getProductionPlans(): OrderProductionPlan[] {
+    this.ensureHydrated();
+    return [...defaultProductionPlans];
+  }
+
+  setProductionPlans(list: OrderProductionPlan[]) {
+    this.ensureHydrated();
+    defaultProductionPlans.length = 0;
+    defaultProductionPlans.push(...list);
+    this.persistProductionPlans();
+  }
+
+  saveProductionPlan(plan: OrderProductionPlan): OrderProductionPlan {
+    this.ensureHydrated();
+    const idx = defaultProductionPlans.findIndex((p) => p.id === plan.id || p.orderId === plan.orderId);
+    if (idx !== -1) {
+      defaultProductionPlans[idx] = { ...defaultProductionPlans[idx], ...plan, updatedAt: new Date().toISOString() };
+    } else {
+      defaultProductionPlans.unshift({ ...plan, updatedAt: new Date().toISOString() });
+    }
+    this.persistProductionPlans();
+    return idx !== -1 ? defaultProductionPlans[idx] : defaultProductionPlans[0];
+  }
+
+  deleteProductionPlan(idOrOrderId: string): boolean {
+    this.ensureHydrated();
+    const idx = defaultProductionPlans.findIndex((p) => p.id === idOrOrderId || p.orderId === idOrOrderId);
+    if (idx !== -1) {
+      defaultProductionPlans.splice(idx, 1);
+      this.persistProductionPlans();
+      return true;
+    }
+    return false;
   }
 }
 

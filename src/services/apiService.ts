@@ -8,6 +8,7 @@ import type {
   WarehouseStock,
   MaterialReceival,
   Order,
+  OrderProductionPlan,
 } from '@/types';
 import { firebaseService } from './firebaseService';
 import { mockRepository } from '@/repositories/mockRepository';
@@ -402,5 +403,43 @@ export const apiService = {
   clearFinishedGoods: async () => {
     mockRepository.clearFinishedGoods();
     return 0;
+  },
+
+  // Production Plans
+  getProductionPlans: async (): Promise<OrderProductionPlan[]> => {
+    try {
+      const fbData = await firebaseService.getProductionPlans();
+      if (fbData && fbData.length > 0) {
+        mockRepository.setProductionPlans(fbData);
+        return fbData;
+      }
+    } catch (e) {}
+    return mockRepository.getProductionPlans();
+  },
+
+  saveProductionPlan: async (plan: OrderProductionPlan): Promise<OrderProductionPlan> => {
+    const saved = mockRepository.saveProductionPlan(plan);
+    try {
+      await firebaseService.saveProductionPlan(saved);
+    } catch (e) {}
+    try {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('erp:productionPlansUpdated', { detail: saved }));
+      }
+    } catch (e) {}
+    return saved;
+  },
+
+  deleteProductionPlan: async (id: string): Promise<{ success: boolean }> => {
+    mockRepository.deleteProductionPlan(id);
+    try {
+      await firebaseService.deleteProductionPlan(id);
+    } catch (e) {}
+    try {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('erp:productionPlansUpdated'));
+      }
+    } catch (e) {}
+    return { success: true };
   },
 };

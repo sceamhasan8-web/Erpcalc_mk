@@ -1,7 +1,7 @@
 import { mockRepository } from '@/repositories/mockRepository';
 import { firebaseService } from '@/services/firebaseService';
 import { apiService } from '@/services/apiService';
-import type { Buyer, CostTracking, Department, FinishedGoods, Notification, Order, ProductionFlow, Report, User, WarehouseStock, MaterialReceival, Article, BuyerOrder } from '@/types';
+import type { Buyer, CostTracking, Department, FinishedGoods, Notification, Order, ProductionFlow, Report, User, WarehouseStock, MaterialReceival, Article, BuyerOrder, OrderProductionPlan } from '@/types';
 
 export interface InventoryTransferPayload {
   itemId: string;
@@ -105,6 +105,36 @@ export class ErpService {
 
   getBuyerOrders(): BuyerOrder[] {
     return mockRepository.getBuyerOrders();
+  }
+
+  getProductionPlans(): OrderProductionPlan[] {
+    return mockRepository.getProductionPlans();
+  }
+
+  saveProductionPlan(plan: OrderProductionPlan): OrderProductionPlan {
+    const saved = mockRepository.saveProductionPlan(plan);
+    try {
+      firebaseService.saveProductionPlan(saved);
+    } catch (e) {}
+    try {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('erp:productionPlansUpdated', { detail: saved }));
+      }
+    } catch (e) {}
+    return saved;
+  }
+
+  deleteProductionPlan(idOrOrderId: string): boolean {
+    const res = mockRepository.deleteProductionPlan(idOrOrderId);
+    try {
+      firebaseService.deleteProductionPlan(idOrOrderId);
+    } catch (e) {}
+    try {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('erp:productionPlansUpdated'));
+      }
+    } catch (e) {}
+    return res;
   }
 
   getCostTracking(): CostTracking[] {

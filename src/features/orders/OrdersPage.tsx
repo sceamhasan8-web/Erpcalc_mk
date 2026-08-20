@@ -89,6 +89,7 @@ export function OrdersPage() {
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [buyerSearchQuery, setBuyerSearchQuery] = useState<string>('');
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
+  const [showOrderForm, setShowOrderForm] = useState<boolean>(false);
   const [previewImage, setPreviewImage] = useState<{ src: string; title: string } | null>(null);
   const [openDeptItemIds, setOpenDeptItemIds] = useState<Set<string>>(new Set());
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
@@ -336,6 +337,7 @@ export function OrdersPage() {
       items: [createEmptyItem()],
     });
     setEditingOrderId(null);
+    setShowOrderForm(false);
   }
 
   function loadOrderIntoForm(order: BuyerOrder) {
@@ -403,6 +405,7 @@ export function OrdersPage() {
       items: loadedItems.length > 0 ? loadedItems : [createEmptyItem()],
     });
     setEditingOrderId(order.id);
+    setShowOrderForm(true);
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -718,7 +721,7 @@ export function OrdersPage() {
             <p className="text-xs font-bold uppercase tracking-wider text-cyan-400">Orders Management</p>
             <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight mt-0.5">Receive Buyer Orders</h1>
           </div>
-          <div className="grid grid-cols-2 sm:flex items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2.5">
             <select
               value={filterBuyer}
               onChange={(e) => setFilterBuyer(e.target.value)}
@@ -739,11 +742,63 @@ export function OrdersPage() {
                 <option key={a.id} value={a.id}>{a.name}</option>
               ))}
             </select>
+
+            {/* Toggle Order Entry Section Button */}
+            <button
+              type="button"
+              onClick={() => {
+                if (showOrderForm) {
+                  resetForm();
+                  setShowOrderForm(false);
+                } else {
+                  setShowOrderForm(true);
+                }
+              }}
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs sm:text-sm font-black transition shadow-md ${
+                showOrderForm
+                  ? 'bg-rose-500/15 border border-rose-500/30 text-rose-400 hover:bg-rose-500/25'
+                  : 'bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white shadow-cyan-500/25'
+              }`}
+            >
+              {showOrderForm ? (
+                <>
+                  <span>✕ Close Form</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-base font-black leading-none">＋</span>
+                  <span>Create New Order</span>
+                </>
+              )}
+            </button>
           </div>
         </div>
 
-        {/* Order Form */}
-        <form onSubmit={handleSubmit} className="space-y-6 mb-8">
+        {/* Conditionally Expanded Order Entry Form */}
+        {showOrderForm && (
+          <form onSubmit={handleSubmit} className="space-y-6 mb-8 p-4 sm:p-6 rounded-2xl border border-cyan-500/30 bg-gradient-to-b from-[var(--ec-card)] to-[var(--ec-surface)]/50 shadow-lg animate-fadeIn">
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--ec-border)]">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-wider text-cyan-400">
+                  {editingOrderId ? 'EDIT ORDER' : 'NEW ORDER ENTRY'}
+                </span>
+                <h3 className="text-base sm:text-lg font-black text-[var(--ec-foreground)]">
+                  {editingOrderId ? `Edit Order #${form.orderNumber || ''}` : 'Receive & Configure Buyer Order'}
+                </h3>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  resetForm();
+                  setShowOrderForm(false);
+                }}
+                className="w-7 h-7 rounded-full bg-[var(--ec-surface)] hover:bg-red-500/20 text-[var(--ec-muted)] hover:text-red-400 text-xs font-bold transition flex items-center justify-center border border-[var(--ec-border)]"
+                title="Close Form"
+              >
+                ✕
+              </button>
+            </div>
           {/* Order Level Info (Order Number, Buyer, Unit, Delivery Date) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 p-4 rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-surface)]/50">
             <div>
@@ -1285,6 +1340,7 @@ export function OrdersPage() {
             </button>
           </div>
         </form>
+        )}
 
         {/* Buyer Wise Summary Section */}
         <section className="mb-8 pt-4 border-t border-[var(--ec-border)]">

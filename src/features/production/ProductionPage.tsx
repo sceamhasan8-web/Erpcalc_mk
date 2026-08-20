@@ -5,7 +5,7 @@ import { apiService } from '@/services/apiService';
 import { firebaseService } from '@/services/firebaseService';
 import { useModal } from '@/context/ModalContext';
 import { useProductionUnit } from '@/lib/unitSettings';
-import type { ProductionFlow, BuyerOrder, BuyerOrderItem, Department } from '@/types';
+import type { ProductionFlow, BuyerOrder, BuyerOrderItem, Department, OrderProductionPlan, SectionPlanTarget } from '@/types';
 import { 
   Factory, 
   CheckCircle2, 
@@ -25,7 +25,10 @@ import {
   BarChart3,
   ListOrdered,
   Filter,
-  ArrowRight
+  ArrowRight,
+  Target,
+  AlertTriangle,
+  Sliders
 } from 'lucide-react';
 
 const GENDER_CATEGORIES = [
@@ -51,6 +54,7 @@ export function ProductionPage() {
   const [flows, setFlows] = useState<ProductionFlow[]>([]);
   const [buyerOrders, setBuyerOrders] = useState<BuyerOrder[]>([]);
   const [departments, setDepartments] = useState<string[]>([]);
+  const [plans, setPlans] = useState<OrderProductionPlan[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Active navigation view: defaults to 'history' (Production Entry List)
@@ -114,13 +118,15 @@ export function ProductionPage() {
     async function loadInitialData() {
       try {
         setLoading(true);
-        const [ordersData, flowsData, deptsData] = await Promise.all([
+        const [ordersData, flowsData, deptsData, plansData] = await Promise.all([
           apiService.getBuyerOrders(),
           apiService.getProductionFlows(),
           apiService.getDepartments(),
+          apiService.getProductionPlans(),
         ]);
         setBuyerOrders(ordersData);
         setFlows(flowsData);
+        setPlans(plansData);
         const validDepts = deptsData
           .filter((d) => d.name.toLowerCase() !== 'warehouse')
           .map((d) => d.name);
@@ -154,19 +160,29 @@ export function ProductionPage() {
       }
     });
 
+    const unsubPlans = firebaseService.subscribeProductionPlans((livePlans) => {
+      if (livePlans && Array.isArray(livePlans)) {
+        setPlans(livePlans);
+      }
+    });
+
     const handleLocalSync = () => {
       apiService.getProductionFlows().then(setFlows).catch(() => {});
       apiService.getBuyerOrders().then(setBuyerOrders).catch(() => {});
+      apiService.getProductionPlans().then(setPlans).catch(() => {});
     };
     window.addEventListener('erp:productionFlowsUpdated', handleLocalSync);
     window.addEventListener('erp:buyerOrdersUpdated', handleLocalSync);
+    window.addEventListener('erp:productionPlansUpdated', handleLocalSync);
 
     return () => {
       unsubOrders();
       unsubFlows();
       unsubDepts();
+      unsubPlans();
       window.removeEventListener('erp:productionFlowsUpdated', handleLocalSync);
       window.removeEventListener('erp:buyerOrdersUpdated', handleLocalSync);
+      window.removeEventListener('erp:productionPlansUpdated', handleLocalSync);
     };
   }, []);
 
@@ -360,6 +376,77 @@ export function ProductionPage() {
 
     return { total, bySize };
   }, [selectedOrder, selectedDepartment, selectedItem, selectedProcess, flows, activeCategoryConfig]);
+
+  // Current order production plan
+  const currentPlan = useMemo(() => {
+    if (!selectedOrder) return null;
+    return plans.find((p) => p.orderId === selectedOrder.id || p.orderNumber === selectedOrder.orderNumber) || null;
+  }, [plans, selectedOrder]);
+
+  // Live calculation of department targets, achieved fill, and due adjustment
+  const currentDeptPlanTarget = useMemo(() => {
+    if (!selectedDepartment || !selectedOrder) return null;
+    const planSection = currentPlan?.sections?.[selectedDepartment];
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const d = new Date();
+    const day = d.getDay();
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+    const monday = new Date(d.setDate(diff));
+    monday.setHours(0, 0, 0, 0);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    sunday.setHours(23, 59, 59, 999);
+
+    const deptFlows = flows.filter((f) => f.orderId === selectedOrder.id && f.department === selectedDepartment);
+    const totalOutput = deptFlows.reduce((sum, f) => sum + (f.completed || 0), 0);
+    
+    const todayOutput = deptFlows
+      .filter((f) => {
+        if (!f.updatedAt) return false;
+        const dt = new Date(f.updatedAt);
+        dt.setHours(0, 0, 0, 0);
+        return dt.getTime() === today.getTime();
+      })
+      .reduce((sum, f) => sum + (f.completed || 0), 0);
+
+    const weekOutput = deptFlows
+      .filter((f) => {
+        if (!f.updatedAt) return false;
+        const dt = new Date(f.updatedAt);
+        return dt.getTime() >= monday.getTime() && dt.getTime() <= sunday.getTime();
+      })
+      .reduce((sum, f) => sum + (f.completed || 0), 0);
+
+    const dailyTarget = planSection?.dailyTarget || Math.ceil((selectedOrder.quantity || 1000) / 10);
+    const weeklyTarget = planSection?.weeklyTarget || (dailyTarget * 6);
+    const totalTarget = planSection?.totalTarget || selectedOrder.quantity || 1000;
+
+    const todayDue = Math.max(0, dailyTarget - todayOutput);
+    const weekDue = Math.max(0, weeklyTarget - weekOutput);
+    const totalDue = Math.max(0, totalTarget - totalOutput);
+
+    const dailyPct = dailyTarget > 0 ? Math.min(100, Math.round((todayOutput / dailyTarget) * 100)) : 0;
+    const weeklyPct = weeklyTarget > 0 ? Math.min(100, Math.round((weekOutput / weeklyTarget) * 100)) : 0;
+    const totalPct = totalTarget > 0 ? Math.min(100, Math.round((totalOutput / totalTarget) * 100)) : 0;
+
+    return {
+      dailyTarget,
+      weeklyTarget,
+      totalTarget,
+      todayOutput,
+      weekOutput,
+      totalOutput,
+      todayDue,
+      weekDue,
+      totalDue,
+      dailyPct,
+      weeklyPct,
+      totalPct,
+    };
+  }, [selectedDepartment, selectedOrder, currentPlan, flows]);
 
   // Calculate this entry's total quantity
   const currentEntryQuantity = useMemo(() => {
@@ -572,7 +659,10 @@ export function ProductionPage() {
       };
 
       const created = await apiService.createProductionFlow(flowPayload);
-      setFlows((prev) => [created, ...prev]);
+      setFlows((prev) => {
+        if (prev.some((f) => f.id === created.id)) return prev;
+        return [created, ...prev];
+      });
 
       const displayDateStr = finalDate.toLocaleDateString([], { day: 'numeric', month: 'short' });
       const displayTimeStr = finalDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -1722,6 +1812,90 @@ export function ProductionPage() {
                   </div>
                 )}
 
+                {/* LIVE PRODUCTION PLAN TARGET FILL & DUE TRACKER */}
+                {selectedDepartment && currentDeptPlanTarget && (
+                  <div className="pt-4 border-t border-[var(--ec-border)] space-y-2.5 animate-fadeIn">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[11px] sm:text-xs font-black uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
+                        <Target className="h-4 w-4" /> {selectedDepartment} Production Target & Due Status:
+                      </label>
+                      <a
+                        href="/planning"
+                        className="text-[11px] font-bold text-cyan-400 hover:text-cyan-300 transition flex items-center gap-1"
+                      >
+                        <Sliders className="h-3 w-3" />
+                        <span>Adjust Plan in Planning</span>
+                      </a>
+                    </div>
+
+                    <div className="p-3.5 rounded-2xl bg-gradient-to-br from-slate-900/90 via-[var(--ec-surface)] to-slate-900/90 border border-cyan-500/30 space-y-3 shadow-sm">
+                      {/* Metric Chips: Daily, Weekly, Total Target Fill */}
+                      <div className="grid grid-cols-3 gap-2 text-center">
+                        {/* Daily Fill */}
+                        <div className="p-2.5 rounded-xl bg-[var(--ec-card)] border border-[var(--ec-border)]/70 space-y-1">
+                          <span className="text-[10px] font-bold text-[var(--ec-muted)] uppercase tracking-wider">Today's Target</span>
+                          <p className="text-xs sm:text-sm font-black text-cyan-400">
+                            {currentDeptPlanTarget.todayOutput} <span className="text-[10px] font-normal text-[var(--ec-muted)]">/ {currentDeptPlanTarget.dailyTarget}</span>
+                          </p>
+                          <div className="w-full bg-[var(--ec-surface)] h-1.5 rounded-full overflow-hidden">
+                            <div className="bg-cyan-400 h-full rounded-full" style={{ width: `${currentDeptPlanTarget.dailyPct}%` }} />
+                          </div>
+                          <span className="text-[9px] font-black text-cyan-300 block">{currentDeptPlanTarget.dailyPct}% Filled</span>
+                        </div>
+
+                        {/* Weekly Fill */}
+                        <div className="p-2.5 rounded-xl bg-[var(--ec-card)] border border-[var(--ec-border)]/70 space-y-1">
+                          <span className="text-[10px] font-bold text-[var(--ec-muted)] uppercase tracking-wider">Week's Target</span>
+                          <p className="text-xs sm:text-sm font-black text-blue-400">
+                            {currentDeptPlanTarget.weekOutput} <span className="text-[10px] font-normal text-[var(--ec-muted)]">/ {currentDeptPlanTarget.weeklyTarget}</span>
+                          </p>
+                          <div className="w-full bg-[var(--ec-surface)] h-1.5 rounded-full overflow-hidden">
+                            <div className="bg-blue-400 h-full rounded-full" style={{ width: `${currentDeptPlanTarget.weeklyPct}%` }} />
+                          </div>
+                          <span className="text-[9px] font-black text-blue-300 block">{currentDeptPlanTarget.weeklyPct}% Filled</span>
+                        </div>
+
+                        {/* Total Order Target & Remaining Due */}
+                        <div className="p-2.5 rounded-xl bg-[var(--ec-card)] border border-[var(--ec-border)]/70 space-y-1">
+                          <span className="text-[10px] font-bold text-[var(--ec-muted)] uppercase tracking-wider">Total Order</span>
+                          <p className="text-xs sm:text-sm font-black text-emerald-400">
+                            {currentDeptPlanTarget.totalOutput} <span className="text-[10px] font-normal text-[var(--ec-muted)]">/ {currentDeptPlanTarget.totalTarget}</span>
+                          </p>
+                          <div className="w-full bg-[var(--ec-surface)] h-1.5 rounded-full overflow-hidden">
+                            <div className="bg-emerald-400 h-full rounded-full" style={{ width: `${currentDeptPlanTarget.totalPct}%` }} />
+                          </div>
+                          <span className="text-[9px] font-black text-emerald-300 block">{currentDeptPlanTarget.totalPct}% Filled</span>
+                        </div>
+                      </div>
+
+                      {/* DUE / SHORTFALL ADJUSTMENT FOOTER */}
+                      <div className="flex items-center justify-between p-2.5 rounded-xl bg-gradient-to-r from-rose-500/10 via-amber-500/10 to-transparent border border-rose-500/20 text-xs">
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className={`h-4 w-4 ${currentDeptPlanTarget.todayDue > 0 ? 'text-amber-400 animate-bounce' : 'text-emerald-400'}`} />
+                          <div>
+                            <span className="font-bold text-[var(--ec-foreground)]">
+                              {currentDeptPlanTarget.todayDue > 0 ? `Today's Remaining Due: ${currentDeptPlanTarget.todayDue} ${selectedOrder?.unit || defaultProductionUnit}` : `Today's Daily Target Completed!`}
+                            </span>
+                            <p className="text-[10px] text-[var(--ec-muted)]">
+                              Total Order Remaining Due: <strong className="text-rose-400">{currentDeptPlanTarget.totalDue}</strong> {selectedOrder?.unit || defaultProductionUnit}
+                            </p>
+                          </div>
+                        </div>
+
+                        <span className={`text-[10px] font-black px-2 py-0.5 rounded-md ${
+                          currentDeptPlanTarget.totalDue === 0
+                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                            : currentDeptPlanTarget.todayDue === 0
+                            ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                            : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                        }`}>
+                          {currentDeptPlanTarget.totalDue === 0 ? '✓ Order 100% Done' : currentDeptPlanTarget.todayDue === 0 ? '✓ Day Target Met' : '⚠️ Due Pending'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Step 5: Size-Wise Production Entry Grid */}
                 <div className="space-y-3 pt-4 border-t border-[var(--ec-border)]">
                   <div className="flex items-center justify-between flex-wrap gap-2">
@@ -1743,14 +1917,16 @@ export function ProductionPage() {
                       <button
                         type="button"
                         onClick={handleFillRemaining}
-                        className="px-2 sm:px-2.5 py-1 rounded-lg text-[11px] font-bold border border-cyan-500/40 bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition"
+                        disabled={isSubmitting}
+                        className="px-2 sm:px-2.5 py-1 rounded-lg text-[11px] font-bold border border-cyan-500/40 bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition disabled:opacity-50"
                       >
                         Fill Remaining
                       </button>
                       <button
                         type="button"
                         onClick={handleClearSizes}
-                        className="px-2 sm:px-2.5 py-1 rounded-lg text-[11px] font-bold border border-[var(--ec-border)] bg-[var(--ec-surface)] text-[var(--ec-muted)] hover:text-red-400 transition"
+                        disabled={isSubmitting}
+                        className="px-2 sm:px-2.5 py-1 rounded-lg text-[11px] font-bold border border-[var(--ec-border)] bg-[var(--ec-surface)] text-[var(--ec-muted)] hover:text-red-400 transition disabled:opacity-50"
                       >
                         Clear
                       </button>
@@ -1788,9 +1964,10 @@ export function ProductionPage() {
                             type="number"
                             min="0"
                             value={currentVal}
+                            disabled={isSubmitting}
                             onChange={(e) => handleSizeQuantityChange(sz, e.target.value)}
                             placeholder="0"
-                            className="w-full text-center font-black text-xs sm:text-sm rounded-lg border border-[var(--ec-border)] bg-[var(--ec-card)] px-1 py-1 text-[var(--ec-foreground)] focus:outline-none focus:border-cyan-500"
+                            className="w-full text-center font-black text-xs sm:text-sm rounded-lg border border-[var(--ec-border)] bg-[var(--ec-card)] px-1 py-1 text-[var(--ec-foreground)] focus:outline-none focus:border-cyan-500 disabled:opacity-50"
                           />
                         </div>
                       );
@@ -1805,12 +1982,13 @@ export function ProductionPage() {
                         type="number"
                         min="0"
                         value={directQuantity}
+                        disabled={isSubmitting}
                         onChange={(e) => {
                           setDirectQuantity(e.target.value);
                           setSizeQuantities({});
                         }}
                         placeholder="0"
-                        className="w-20 rounded-lg border border-[var(--ec-border)] bg-[var(--ec-card)] px-2 py-1 text-xs font-bold text-[var(--ec-foreground)] focus:outline-none focus:border-cyan-500"
+                        className="w-20 rounded-lg border border-[var(--ec-border)] bg-[var(--ec-card)] px-2 py-1 text-xs font-bold text-[var(--ec-foreground)] focus:outline-none focus:border-cyan-500 disabled:opacity-50"
                       />
                       <span className="text-[11px] text-[var(--ec-muted)]">{selectedOrder?.unit || defaultProductionUnit}</span>
                     </div>
@@ -1832,9 +2010,10 @@ export function ProductionPage() {
                   <input
                     type="text"
                     value={notes}
+                    disabled={isSubmitting}
                     onChange={(e) => setNotes(e.target.value)}
                     placeholder="e.g. Shift A, Line 2 output"
-                    className="w-full rounded-xl border border-[var(--ec-border)] bg-[var(--ec-surface)] px-3 py-2 text-xs text-[var(--ec-foreground)] placeholder-[var(--ec-muted)] focus:outline-none focus:border-cyan-500"
+                    className="w-full rounded-xl border border-[var(--ec-border)] bg-[var(--ec-surface)] px-3 py-2 text-xs text-[var(--ec-foreground)] placeholder-[var(--ec-muted)] focus:outline-none focus:border-cyan-500 disabled:opacity-50"
                   />
                 </div>
 
@@ -2105,20 +2284,45 @@ export function ProductionPage() {
                             total = orderFlows.filter((f) => f.department === d).reduce((s, f) => s + f.completed, 0);
                           }
 
-                          const pct = Math.min(100, Math.round((total / (order.quantity || 1)) * 100));
+                          const orderPlan = plans.find((p) => p.orderId === order.id || p.orderNumber === order.orderNumber);
+                          const sPlan = orderPlan?.sections?.[d];
+                          const totalTarget = sPlan?.totalTarget || order.quantity || 1;
+                          const dailyTarget = sPlan?.dailyTarget || Math.ceil(totalTarget / 10);
+                          const pct = Math.min(100, Math.round((total / totalTarget) * 100));
+                          const remainingDue = Math.max(0, totalTarget - total);
+
                           return (
-                            <div key={d} className="rounded-xl bg-[var(--ec-surface)] p-2 sm:p-2.5 text-xs border border-[var(--ec-border)]">
+                            <div key={d} className={`rounded-xl p-2 sm:p-2.5 text-xs border transition ${
+                              pct >= 100
+                                ? 'bg-emerald-500/10 border-emerald-500/30'
+                                : remainingDue > 0
+                                ? 'bg-[var(--ec-surface)] border-[var(--ec-border)]'
+                                : 'bg-[var(--ec-surface)] border-[var(--ec-border)]'
+                            }`}>
                               <div className="flex justify-between font-bold text-[11px] sm:text-xs">
                                 <span className="truncate">{d}</span>
-                                <span className="text-cyan-400 font-mono">{pct}%</span>
+                                <span className={pct >= 100 ? 'text-emerald-400 font-mono' : 'text-cyan-400 font-mono'}>{pct}%</span>
                               </div>
                               <div className="w-full bg-[var(--ec-card)] h-1.5 rounded-full overflow-hidden mt-1.5 border border-[var(--ec-border)]/60">
-                                <div className="bg-cyan-400 h-full rounded-full" style={{ width: `${pct}%` }} />
+                                <div
+                                  className={`h-full rounded-full transition-all ${pct >= 100 ? 'bg-emerald-400' : 'bg-cyan-400'}`}
+                                  style={{ width: `${pct}%` }}
+                                />
                               </div>
-                              <div className="text-[9px] sm:text-[10px] text-[var(--ec-muted)] mt-1.5 flex justify-between">
-                                <span>Done: {total} {stagesText}</span>
-                                <span>Target: {order.quantity}</span>
+                              <div className="text-[9px] sm:text-[10px] text-[var(--ec-muted)] mt-1.5 flex justify-between gap-1 flex-wrap">
+                                <span>Done: <strong className="text-[var(--ec-foreground)]">{total}</strong> {stagesText}</span>
+                                <span>Target: <strong>{totalTarget}</strong></span>
                               </div>
+                              {remainingDue > 0 ? (
+                                <div className="text-[9px] font-black text-rose-400 mt-1 flex justify-between border-t border-[var(--ec-border)]/40 pt-1">
+                                  <span>Due: {remainingDue}</span>
+                                  <span className="text-[var(--ec-muted)] font-normal">Day: {dailyTarget}/d</span>
+                                </div>
+                              ) : (
+                                <div className="text-[9px] font-black text-emerald-400 mt-1 border-t border-emerald-500/20 pt-1">
+                                  ✓ Target Completed
+                                </div>
+                              )}
                             </div>
                           );
                         })}

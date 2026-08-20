@@ -21,10 +21,14 @@ import {
   ChevronRight,
   Filter,
   Calendar,
-  X
+  X,
+  Target,
+  Zap,
+  Sliders,
+  AlertTriangle
 } from 'lucide-react';
 import Link from 'next/link';
-import type { BuyerOrder, ProductionFlow, Department } from '@/types';
+import type { BuyerOrder, ProductionFlow, Department, OrderProductionPlan } from '@/types';
 
 const chartData = [
   { name: 'Mon', production: 4200 },
@@ -50,6 +54,7 @@ export function DashboardPage() {
   const [notifications, setNotifications] = useState(erpService.getNotifications());
   const [productionFlows, setProductionFlows] = useState<ProductionFlow[]>(() => mockRepository.getProductionFlows());
   const [warehouseStocks, setWarehouseStocks] = useState(erpService.getWarehouseStocks());
+  const [productionPlans, setProductionPlans] = useState<OrderProductionPlan[]>(() => erpService.getProductionPlans());
 
   // Modal State for Production Details
   const [isProductionModalOpen, setIsProductionModalOpen] = useState(false);
@@ -61,16 +66,18 @@ export function DashboardPage() {
   useEffect(() => {
     async function loadData() {
       try {
-        const [ordersData, flowsData, deptsData, stockData] = await Promise.all([
+        const [ordersData, flowsData, deptsData, stockData, plansData] = await Promise.all([
           apiService.getBuyerOrders(),
           apiService.getProductionFlows(),
           apiService.getDepartments(),
           apiService.getWarehouseStocks(),
+          apiService.getProductionPlans(),
         ]);
         if (ordersData && ordersData.length > 0) setBuyerOrders(ordersData);
         if (flowsData && flowsData.length > 0) setProductionFlows(flowsData);
         if (deptsData && deptsData.length > 0) setDepartments(deptsData);
         if (stockData && stockData.length > 0) setWarehouseStocks(stockData);
+        if (plansData && plansData.length > 0) setProductionPlans(plansData);
       } catch (err) {
         console.error('Failed loading dashboard data', err);
       }
@@ -90,12 +97,16 @@ export function DashboardPage() {
     const unsubStocks = firebaseService.subscribeWarehouseStocks((live) => {
       if (live && Array.isArray(live)) setWarehouseStocks(live);
     });
+    const unsubPlans = firebaseService.subscribeProductionPlans((live) => {
+      if (live && Array.isArray(live)) setProductionPlans(live);
+    });
 
     function handleDataUpdate() {
       apiService.getBuyerOrders().then(setBuyerOrders).catch(() => {});
       apiService.getProductionFlows().then(setProductionFlows).catch(() => {});
       apiService.getDepartments().then(setDepartments).catch(() => {});
       apiService.getWarehouseStocks().then(setWarehouseStocks).catch(() => {});
+      apiService.getProductionPlans().then(setProductionPlans).catch(() => {});
       setNotifications(erpService.getNotifications());
     }
 
@@ -105,18 +116,21 @@ export function DashboardPage() {
     window.addEventListener('erp:departmentsUpdated', handleDataUpdate);
     window.addEventListener('erp:finishedGoodsUpdated', handleDataUpdate);
     window.addEventListener('erp:warehouseStocksUpdated', handleDataUpdate);
+    window.addEventListener('erp:productionPlansUpdated', handleDataUpdate);
 
     return () => {
       unsubOrders();
       unsubFlows();
       unsubDepts();
       unsubStocks();
+      unsubPlans();
       window.removeEventListener('erp:buyerOrdersUpdated', handleDataUpdate);
       window.removeEventListener('erp:buyersUpdated', handleDataUpdate);
       window.removeEventListener('erp:productionFlowsUpdated', handleDataUpdate);
       window.removeEventListener('erp:departmentsUpdated', handleDataUpdate);
       window.removeEventListener('erp:finishedGoodsUpdated', handleDataUpdate);
       window.removeEventListener('erp:warehouseStocksUpdated', handleDataUpdate);
+      window.removeEventListener('erp:productionPlansUpdated', handleDataUpdate);
     };
   }, []);
 
@@ -172,6 +186,91 @@ export function DashboardPage() {
       inventoryItemsCount,
     };
   }, [productionFlows, buyerOrders, warehouseStocks]);
+
+  // Comprehensive Production Plan Target & Efficiency calculations
+  const planEfficiency = useMemo(() => {
+    let plannedDailyTotal = 0;
+    let plannedWeeklyTotal = 0;
+    let plannedOrderTotal = 0;
+    let todayTotalDue = 0;
+    let totalOrderDue = 0;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const sectionMap: Record<string, { plannedDaily: number; actualToday: number; plannedWeekly: number; actualWeek: number; totalPlanned: number; totalActual: number }> = {};
+
+    buyerOrders.forEach((order) => {
+      if (order.status === 'Completed') return;
+      const plan = productionPlans.find((p) => p.orderId === order.id || p.orderNumber === order.orderNumber);
+      const reqDepts = order.requiredDepartments && order.requiredDepartments.length > 0
+        ? order.requiredDepartments
+        : departments.map((d) => d.name).filter((n) => n.toLowerCase() !== 'warehouse');
+
+      reqDepts.forEach((dept) => {
+        if (!sectionMap[dept]) {
+          sectionMap[dept] = { plannedDaily: 0, actualToday: 0, plannedWeekly: 0, actualWeek: 0, totalPlanned: 0, totalActual: 0 };
+        }
+
+        const sTarget = plan?.sections?.[dept];
+        const dailyT = sTarget?.dailyTarget || Math.ceil((order.quantity || 1000) / 10);
+        const weeklyT = sTarget?.weeklyTarget || (dailyT * 6);
+        const totalT = sTarget?.totalTarget || (order.quantity || 1000);
+
+        plannedDailyTotal += dailyT;
+        plannedWeeklyTotal += weeklyT;
+        plannedOrderTotal += totalT;
+
+        sectionMap[dept].plannedDaily += dailyT;
+        sectionMap[dept].plannedWeekly += weeklyT;
+        sectionMap[dept].totalPlanned += totalT;
+
+        const flows = productionFlows.filter((f) => (f.orderId === order.id || f.orderId === order.orderNumber) && f.department === dept);
+        const todayDone = flows
+          .filter((f) => {
+            if (!f.updatedAt) return false;
+            const d = new Date(f.updatedAt);
+            d.setHours(0, 0, 0, 0);
+            return d.getTime() === today.getTime();
+          })
+          .reduce((s, f) => s + (f.completed || 0), 0);
+        const totalDone = flows.reduce((s, f) => s + (f.completed || 0), 0);
+
+        sectionMap[dept].actualToday += todayDone;
+        sectionMap[dept].totalActual += totalDone;
+
+        todayTotalDue += Math.max(0, dailyT - todayDone);
+        totalOrderDue += Math.max(0, totalT - totalDone);
+      });
+    });
+
+    const dailyEfficiency = plannedDailyTotal > 0 ? Math.min(100, Math.round((productionMetrics.productionTodayValue / plannedDailyTotal) * 100)) : (productionMetrics.productionTodayValue > 0 ? 100 : 0);
+    const weeklyEfficiency = plannedWeeklyTotal > 0 ? Math.min(100, Math.round((productionMetrics.weeklyProductionValue / plannedWeeklyTotal) * 100)) : 0;
+    const overallEfficiency = plannedOrderTotal > 0 ? Math.min(100, Math.round((productionMetrics.productionTotalValue / plannedOrderTotal) * 100)) : 0;
+
+    const sectionEfficiencies = Object.entries(sectionMap).map(([name, data]) => {
+      const eff = data.plannedDaily > 0 ? Math.min(100, Math.round((data.actualToday / data.plannedDaily) * 100)) : 0;
+      const due = Math.max(0, data.plannedDaily - data.actualToday);
+      return {
+        name,
+        ...data,
+        efficiency: eff,
+        due,
+      };
+    });
+
+    return {
+      plannedDailyTotal,
+      plannedWeeklyTotal,
+      plannedOrderTotal,
+      dailyEfficiency,
+      weeklyEfficiency,
+      overallEfficiency,
+      todayTotalDue,
+      totalOrderDue,
+      sectionEfficiencies,
+    };
+  }, [buyerOrders, productionPlans, productionFlows, departments, productionMetrics]);
 
   // Distinct system departments dynamically aggregated from settings, flows, and orders
   const departmentNames = useMemo(() => {
@@ -450,11 +549,181 @@ export function DashboardPage() {
             <h1 className="mt-1 text-xl sm:text-2xl font-extrabold text-white">Production Command Center</h1>
             <p className="mt-1 max-w-xl text-xs sm:text-sm text-white/85">Monitor buyers, orders, departments, inventory, and factory performance.</p>
           </div>
-          <div className="rounded-xl border border-white/20 bg-white/15 backdrop-blur-md px-4 py-2.5 text-white shadow-sm flex sm:flex-col justify-between items-center sm:items-start flex-shrink-0">
-            <p className="text-xs text-white/80 font-medium">Daily target status</p>
-            <p className="text-base sm:text-lg font-bold text-white">93% on track</p>
-          </div>
+          <Link
+            href="/planning"
+            className="rounded-xl border border-white/20 bg-white/15 hover:bg-white/25 transition backdrop-blur-md px-4 py-2.5 text-white shadow-sm flex sm:flex-col justify-between items-center sm:items-start flex-shrink-0 cursor-pointer"
+          >
+            <div className="flex items-center gap-1.5">
+              <p className="text-xs text-white/80 font-medium">Daily Plan Efficiency</p>
+              <Target className="h-3.5 w-3.5 text-cyan-300" />
+            </div>
+            <p className="text-base sm:text-lg font-bold text-white">
+              {planEfficiency.dailyEfficiency}% On Track
+            </p>
+          </Link>
         </header>
+
+        {/* PRODUCTION PLAN & TARGET EFFICIENCY WIDGET */}
+        <section className="rounded-2xl sm:rounded-3xl border border-cyan-500/30 bg-gradient-to-br from-slate-900/95 via-blue-950/90 to-slate-900/95 p-4 sm:p-6 shadow-xl backdrop-blur-xl space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/10">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 sm:p-2.5 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 text-white shadow-md shadow-cyan-500/25">
+                <Target className="h-5 w-5 sm:h-6 sm:w-6" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base sm:text-xl font-black text-white">
+                    Production Plan & Target Efficiency
+                  </h2>
+                  <span className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
+                    planEfficiency.dailyEfficiency >= 90
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                      : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                  }`}>
+                    {planEfficiency.dailyEfficiency >= 90 ? 'High Efficiency' : 'Pacing Required'}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-300 mt-0.5">
+                  Real-time target completion rates against active order production plans
+                </p>
+              </div>
+            </div>
+
+            <Link
+              href="/planning"
+              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white text-xs font-black transition shadow-md shadow-cyan-500/20"
+            >
+              <Sliders className="h-3.5 w-3.5" />
+              <span>Manage Plans & Targets &rarr;</span>
+            </Link>
+          </div>
+
+          {/* Efficiency Key Gauges Grid */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {/* Daily Target Efficiency */}
+            <div className="p-3 rounded-2xl bg-slate-800/60 border border-white/10 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase">Daily Efficiency</span>
+                <span className="text-xs font-black text-cyan-400">{planEfficiency.dailyEfficiency}%</span>
+              </div>
+              <div className="flex items-baseline justify-between gap-1">
+                <span className="text-lg sm:text-2xl font-black text-cyan-400">
+                  {productionMetrics.productionTodayValue.toLocaleString()}
+                </span>
+                <span className="text-[10px] sm:text-xs text-slate-400">
+                  / {planEfficiency.plannedDailyTotal.toLocaleString()} {productionUnit}
+                </span>
+              </div>
+              <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-white/5">
+                <div
+                  className="bg-gradient-to-r from-blue-500 to-cyan-400 h-full rounded-full transition-all duration-500"
+                  style={{ width: `${planEfficiency.dailyEfficiency}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Weekly Target Efficiency */}
+            <div className="p-3 rounded-2xl bg-slate-800/60 border border-white/10 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase">Weekly Efficiency</span>
+                <span className="text-xs font-black text-blue-400">{planEfficiency.weeklyEfficiency}%</span>
+              </div>
+              <div className="flex items-baseline justify-between gap-1">
+                <span className="text-lg sm:text-2xl font-black text-blue-400">
+                  {productionMetrics.weeklyProductionValue.toLocaleString()}
+                </span>
+                <span className="text-[10px] sm:text-xs text-slate-400">
+                  / {planEfficiency.plannedWeeklyTotal.toLocaleString()} {productionUnit}
+                </span>
+              </div>
+              <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-white/5">
+                <div
+                  className="bg-gradient-to-r from-cyan-500 to-blue-500 h-full rounded-full transition-all duration-500"
+                  style={{ width: `${planEfficiency.weeklyEfficiency}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Overall Order Efficiency */}
+            <div className="p-3 rounded-2xl bg-slate-800/60 border border-white/10 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase">Total Plan Fill</span>
+                <span className="text-xs font-black text-emerald-400">{planEfficiency.overallEfficiency}%</span>
+              </div>
+              <div className="flex items-baseline justify-between gap-1">
+                <span className="text-lg sm:text-2xl font-black text-emerald-400">
+                  {productionMetrics.productionTotalValue.toLocaleString()}
+                </span>
+                <span className="text-[10px] sm:text-xs text-slate-400">
+                  / {planEfficiency.plannedOrderTotal.toLocaleString()} {productionUnit}
+                </span>
+              </div>
+              <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-white/5">
+                <div
+                  className="bg-gradient-to-r from-cyan-500 to-emerald-400 h-full rounded-full transition-all duration-500"
+                  style={{ width: `${planEfficiency.overallEfficiency}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Target Due Backlog */}
+            <div className="p-3 rounded-2xl bg-slate-800/60 border border-white/10 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase">Backlog Due</span>
+                <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300">
+                  Shortfall
+                </span>
+              </div>
+              <div className="flex items-baseline justify-between gap-1">
+                <span className="text-lg sm:text-2xl font-black text-rose-400">
+                  {planEfficiency.totalOrderDue.toLocaleString()}
+                </span>
+                <span className="text-[10px] sm:text-xs text-slate-400">{productionUnit}</span>
+              </div>
+              <div className="flex items-center justify-between text-[10px] text-slate-400">
+                <span>Today's Due:</span>
+                <strong className="text-amber-400 font-mono">+{planEfficiency.todayTotalDue.toLocaleString()}</strong>
+              </div>
+            </div>
+          </div>
+
+          {/* Section-Wise Efficiency Breakdown Bar Matrix */}
+          <div className="space-y-2 pt-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                <Layers className="h-3.5 w-3.5 text-cyan-400" />
+                Section Production Efficiency Breakdown
+              </span>
+              <span className="text-[10px] text-slate-400">Target vs Actual Output</span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
+              {planEfficiency.sectionEfficiencies.slice(0, 6).map((sec) => (
+                <div
+                  key={sec.name}
+                  className="p-2.5 rounded-xl bg-slate-800/40 border border-white/5 space-y-1 hover:border-cyan-500/30 transition"
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-xs font-bold text-white truncate">{sec.name}</span>
+                    <span className={`text-[10px] font-black ${sec.efficiency >= 90 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                      {sec.efficiency}%
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-[10px] text-slate-400 font-mono">
+                    <span>{sec.actualToday}</span>
+                    <span>/ {sec.plannedDaily}</span>
+                  </div>
+                  <div className="w-full bg-slate-900 h-1.5 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${sec.efficiency >= 90 ? 'bg-emerald-400' : 'bg-cyan-400'}`}
+                      style={{ width: `${sec.efficiency}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
 
         {/* KPI Cards */}
         <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
