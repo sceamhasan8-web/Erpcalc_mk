@@ -1,16 +1,19 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, Suspense } from 'react';
+import dynamic from 'next/dynamic';
 import { usePathname } from 'next/navigation';
 import Sidebar from './Sidebar';
 import Topbar from './Topbar';
 import BottomNav from './BottomNav';
-import MenuCustomizer from './MenuCustomizer';
 import { useTheme } from './ThemeProvider';
 import { useAuth } from '@/context/AuthContext';
 import LoginPage from './LoginPage';
 import AccessDenied from './AccessDenied';
-import UserProfileModal from './UserProfileModal';
+import { PageSkeleton } from './PageSkeleton';
+
+const MenuCustomizer = dynamic(() => import('./MenuCustomizer'), { ssr: false });
+const UserProfileModal = dynamic(() => import('./UserProfileModal'), { ssr: false });
 
 export default function Shell({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -89,7 +92,13 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           onOpenProfile={() => setProfileOpen(true)}
         />
         <main className="flex-1 pb-28 sm:pb-32 lg:pb-8">
-          {isAllowed ? children : <AccessDenied />}
+          {isAllowed ? (
+            <Suspense fallback={<PageSkeleton />}>
+              {children}
+            </Suspense>
+          ) : (
+            <AccessDenied />
+          )}
         </main>
         <div className="lg:hidden">
           <BottomNav
@@ -99,12 +108,14 @@ export default function Shell({ children }: { children: React.ReactNode }) {
         </div>
       </div>
 
-      <MenuCustomizer open={customizerOpen} onClose={() => setCustomizerOpen(false)} />
-      <UserProfileModal
-        isOpen={profileOpen}
-        onClose={() => setProfileOpen(false)}
-        onOpenCustomizer={() => setCustomizerOpen(true)}
-      />
+      {customizerOpen && <MenuCustomizer open={customizerOpen} onClose={() => setCustomizerOpen(false)} />}
+      {profileOpen && (
+        <UserProfileModal
+          isOpen={profileOpen}
+          onClose={() => setProfileOpen(false)}
+          onOpenCustomizer={() => setCustomizerOpen(true)}
+        />
+      )}
 
       {/* Mobile backdrop overlay */}
       {sidebarOpen && (

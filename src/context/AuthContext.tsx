@@ -46,9 +46,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (saved) {
         const parsed = JSON.parse(saved) as AuthUser;
         const sectionConfig = getSectionById(parsed.section);
-        if (sectionConfig) {
-          setUser({ ...parsed, allowedRoutes: sectionConfig.allowedRoutes });
-        }
+        const routes = (parsed.allowedRoutes && parsed.allowedRoutes.length > 0)
+          ? parsed.allowedRoutes
+          : (sectionConfig?.allowedRoutes || ['/']);
+        setUser({ ...parsed, allowedRoutes: routes });
       }
     } catch (e) {
       console.error('Failed to restore auth session:', e);
@@ -60,18 +61,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // ── Login ──────────────────────────────────────────────────────────────────
   const login = useCallback(async (credentials: LoginCredentials): Promise<{ success: boolean; error?: string; defaultPath?: string }> => {
     try {
-      const sectionConfig = getSectionById(credentials.sectionId);
-      if (!sectionConfig) {
-        return { success: false, error: 'Invalid section selected.' };
-      }
-
       const rawUsername = (credentials.username || '').trim();
       const rawPassword = (credentials.password || '').trim();
       const uLower = rawUsername.toLowerCase();
 
-      // ── HR Master Credentials (ONLY works when HR section is selected) ──────
-      // HR credentials are section-specific — they only grant access to HR panel
-      // when the user explicitly logs in via the HR section pathway.
+      if (!rawUsername || !rawPassword) {
+        return { success: false, error: 'Please enter both username/email and password.' };
+      }
+
+      // ── 1. HR Master Credentials ──────────────────────────────────────────
       const isHRMasterUser =
         uLower === HR_MASTER_USERNAME.toLowerCase() ||
         uLower === 'hr' ||
@@ -79,149 +77,96 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const isHRMasterPass = rawPassword === HR_MASTER_PASSWORD;
 
       if (isHRMasterUser && isHRMasterPass) {
-        // Only allow HR login if HR credentials are used — regardless of section selected,
-        // HR credentials must go to HR. If a different section is selected, reject it.
         const hrSection = getSectionById('hr');
-        if (hrSection) {
-          const hrUser: AuthUser = {
-            id: `hr_${Date.now()}`,
-            username: HR_MASTER_USERNAME,
-            name: 'HR Manager',
-            section: 'hr',
-            role: 'HR Manager',
-            email: HR_MASTER_USERNAME,
-            allowedRoutes: hrSection.allowedRoutes,
-            loginTime: new Date().toISOString(),
-          };
-          setUser(hrUser);
-          localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(hrUser));
-          window.dispatchEvent(new CustomEvent('erp:authChanged', { detail: hrUser }));
-          return { success: true, defaultPath: hrSection.defaultPath };
-        }
+        const hrUser: AuthUser = {
+          id: `hr_${Date.now()}`,
+          username: HR_MASTER_USERNAME,
+          name: 'HR Manager',
+          section: 'hr',
+          role: 'HR Manager',
+          email: HR_MASTER_USERNAME,
+          allowedRoutes: hrSection?.allowedRoutes || ['*'],
+          loginTime: new Date().toISOString(),
+        };
+        setUser(hrUser);
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(hrUser));
+        window.dispatchEvent(new CustomEvent('erp:authChanged', { detail: hrUser }));
+        return { success: true, defaultPath: '/hr' };
       }
 
-      // ── If HR credentials were entered but password is wrong → reject early ──
-      // Prevent HR usernames from accidentally logging into other sections
-      if (isHRMasterUser && !isHRMasterPass) {
-        return { success: false, error: 'Incorrect HR credentials. (User: test@hr | Pass: x24)' };
-      }
+      // ── 2. Built-in Admin fallback ────────────────────────────────────────
+      const isAdminUser =
+        uLower === 'siam@erp' ||
+        uLower === 'siam' ||
+        uLower === 'admin' ||
+        uLower === 'admin@factory.com';
+      const isAdminPass = rawPassword === '-test' || rawPassword === 'test';
 
-      // ── HR-created user validation (uses real-time synced hrUsers) ─────────
-      // Validates credentials ONLY against the selected section's assigned users.
-      // A user assigned to "Orders" cannot login via "Warehouse" section.
-      if (rawUsername && rawPassword) {
-        const currentHRUsers = hrUsersRef.current;
-
-        if (currentHRUsers.length > 0) {
-          // Check credentials strictly against the selected section
-          const matchedHRUser = validateHRUserCredentials(
-            currentHRUsers,
-            credentials.sectionId,
-            rawUsername,
-            rawPassword
-          );
-
-          if (matchedHRUser) {
-            // Login into the matched user's assigned section
-            const targetSection = getSectionById(matchedHRUser.sectionId) || sectionConfig;
-            const newUser: AuthUser = {
-              id: matchedHRUser.id,
-              username: matchedHRUser.username,
-              name: matchedHRUser.name,
-              section: matchedHRUser.sectionId,
-              role: matchedHRUser.role,
-              email: matchedHRUser.email,
-              allowedRoutes: targetSection.allowedRoutes,
-              loginTime: new Date().toISOString(),
-            };
-            setUser(newUser);
-            localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(newUser));
-            window.dispatchEvent(new CustomEvent('erp:authChanged', { detail: newUser }));
-            return { success: true, defaultPath: targetSection.defaultPath };
-          }
-
-          // Check if the user credentials match a DIFFERENT section
-          // (i.e., they selected wrong section but correct credentials for another)
-          const matchedOtherSection = currentHRUsers.find(
-            (u) =>
-              u.isActive &&
-              (u.username.toLowerCase() === uLower || u.email?.toLowerCase() === uLower) &&
-              u.password === rawPassword &&
-              u.sectionId !== credentials.sectionId
-          );
-          if (matchedOtherSection) {
-            const wrongSectionName = getSectionById(matchedOtherSection.sectionId)?.shortName || matchedOtherSection.sectionId;
-            return {
-              success: false,
-              error: `These credentials belong to the "${wrongSectionName}" section. Please select the correct section and try again.`,
-            };
-          }
-
-          // Reject if this section already has active HR-managed users (credentials must be wrong)
-          const sectionHasUsers = currentHRUsers.some(
-            (u) => u.sectionId === credentials.sectionId && u.isActive
-          );
-          if (sectionHasUsers) {
-            return { success: false, error: 'Invalid username or password. Contact HR to verify your credentials.' };
-          }
-        }
-      }
-
-      // ── Built-in Admin fallback (hardcoded admin) ──────────────────────────
-      if (credentials.sectionId === 'admin') {
-        if (!rawUsername || !rawPassword) {
-          return { success: false, error: 'Please enter both Admin username and password.' };
-        }
-        const isUserValid = uLower === 'siam@erp' || uLower === 'siam' || uLower === 'admin' || uLower === 'admin@factory.com';
-        const isPassValid = rawPassword === '-test' || rawPassword === 'test';
-        if (!isUserValid || !isPassValid) {
-          return { success: false, error: 'Incorrect username or password for Admin. (User: siam@erp | Pass: -test)' };
-        }
-        const adminSection = getSectionById('admin') || sectionConfig;
-        const newUser: AuthUser = {
+      if (isAdminUser && isAdminPass) {
+        const adminSection = getSectionById('admin');
+        const adminUser: AuthUser = {
           id: `usr_admin_${Date.now()}`,
           username: rawUsername,
           name: 'Siam',
           section: 'admin',
-          role: adminSection.defaultRole,
+          role: adminSection?.defaultRole || 'Super Administrator',
           email: rawUsername.includes('@') ? rawUsername : `${rawUsername}@factory.com`,
-          allowedRoutes: adminSection.allowedRoutes,
+          allowedRoutes: ['*'],
           loginTime: new Date().toISOString(),
         };
+        setUser(adminUser);
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(adminUser));
+        window.dispatchEvent(new CustomEvent('erp:authChanged', { detail: adminUser }));
+        return { success: true, defaultPath: '/' };
+      }
+
+      // ── 3. HR-created user validation (from Firestore hr_users) ────────────
+      const currentHRUsers = hrUsersRef.current;
+      const matchedUser = currentHRUsers.find(
+        (u) =>
+          u.username.trim().toLowerCase() === uLower ||
+          (u.email && u.email.trim().toLowerCase() === uLower)
+      );
+
+      if (matchedUser) {
+        if (matchedUser.password !== rawPassword) {
+          return { success: false, error: 'Incorrect password. Please try again.' };
+        }
+        if (!matchedUser.isActive) {
+          return { success: false, error: 'This account has been deactivated. Please contact HR.' };
+        }
+
+        const targetSection = getSectionById(matchedUser.sectionId) || ERP_SECTIONS[0];
+        const allowedRoutes = (matchedUser.allowedRoutes && matchedUser.allowedRoutes.length > 0)
+          ? matchedUser.allowedRoutes
+          : targetSection.allowedRoutes;
+
+        const newUser: AuthUser = {
+          id: matchedUser.id,
+          username: matchedUser.username,
+          name: matchedUser.name,
+          section: matchedUser.sectionId,
+          role: matchedUser.role || targetSection.defaultRole,
+          email: matchedUser.email,
+          allowedRoutes: allowedRoutes,
+          loginTime: new Date().toISOString(),
+        };
+
         setUser(newUser);
         localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(newUser));
         window.dispatchEvent(new CustomEvent('erp:authChanged', { detail: newUser }));
-        return { success: true, defaultPath: adminSection.defaultPath };
+        return { success: true, defaultPath: targetSection.defaultPath || '/' };
       }
 
-      // ── HR Section direct access guard ─────────────────────────────────────
-      if ((credentials.sectionId as string) === 'hr') {
-        return { success: false, error: 'Incorrect HR credentials. (User: test@hr | Pass: x24)' };
-      }
-
-      // ── Default fallthrough (sections with no HR users yet) ────────────────
-      const username = rawUsername || sectionConfig.defaultUsername;
-      const displayName = uLower.includes('siam') ? 'Siam' : username.split('@')[0].toUpperCase();
-
-      const newUser: AuthUser = {
-        id: `usr_${Date.now()}`,
-        username,
-        name: displayName.charAt(0).toUpperCase() + displayName.slice(1).toLowerCase(),
-        section: sectionConfig.id,
-        role: sectionConfig.defaultRole,
-        email: username.includes('@') ? username : `${username}@factory.com`,
-        allowedRoutes: sectionConfig.allowedRoutes,
-        loginTime: new Date().toISOString(),
+      // ── 4. No matching credentials ─────────────────────────────────────────
+      return {
+        success: false,
+        error: 'Invalid username or password. Please contact HR to create or verify your credentials.',
       };
-
-      setUser(newUser);
-      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(newUser));
-      window.dispatchEvent(new CustomEvent('erp:authChanged', { detail: newUser }));
-      return { success: true, defaultPath: sectionConfig.defaultPath };
     } catch (err: any) {
       return { success: false, error: err.message || 'Login failed. Please try again.' };
     }
-  }, []); // hrUsersRef is always current via ref — no dep needed
+  }, []); // hrUsersRef is always current via ref
 
   const logout = useCallback(() => {
     setUser(null);
@@ -248,7 +193,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const canAccessRoute = useCallback((pathname: string): boolean => {
     if (!user) return false;
-    return isRouteAllowedForSection(user.section, pathname);
+    if (user.section === 'admin') return true;
+    if (user.allowedRoutes.includes('*')) return true;
+    const normalizedPath = pathname === '' ? '/' : pathname;
+    return user.allowedRoutes.some((route) => {
+      if (route === normalizedPath) return true;
+      if (route !== '/' && normalizedPath.startsWith(route)) return true;
+      return false;
+    });
   }, [user]);
 
   // ── HR User Management ─────────────────────────────────────────────────────

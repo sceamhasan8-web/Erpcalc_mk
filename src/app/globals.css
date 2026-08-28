@@ -6,28 +6,28 @@
 
 :root {
   color-scheme: light;
-  --ec-primary: #0b69ff;
-  --ec-primary-600: #0a58e6;
-  --ec-accent: #06b6d4;
+  --ec-primary: #1d4ed8;
+  --ec-primary-600: #1e40af;
+  --ec-accent: #0369a1;
   --ec-bg: #f8fafc;
   --ec-surface: #ffffff;
   --ec-card: #ffffff;
-  --ec-muted: #475569;
-  --ec-foreground: #0f172a;
-  --ec-border: rgba(15,23,42,0.12);
+  --ec-muted: #334155;
+  --ec-foreground: #000000;
+  --ec-border: #cbd5e1;
 }
 
 .dark-theme {
-  color-scheme: dark;
-  --ec-primary: #0b69ff;
-  --ec-primary-600: #0a58e6;
-  --ec-accent: #06b6d4;
-  --ec-bg: #0f172a;
-  --ec-surface: #1e293b;
-  --ec-card: #1e293b;
-  --ec-muted: #94a3b8;
-  --ec-foreground: #f1f5f9;
-  --ec-border: rgba(241,245,249,0.12);
+  color-scheme: light;
+  --ec-primary: #1d4ed8;
+  --ec-primary-600: #1e40af;
+  --ec-accent: #0369a1;
+  --ec-bg: #f8fafc;
+  --ec-surface: #ffffff;
+  --ec-card: #ffffff;
+  --ec-muted: #334155;
+  --ec-foreground: #000000;
+  --ec-border: #cbd5e1;
 }
 
 body {
@@ -35,6 +35,119 @@ body {
   font-family: 'Ubuntu', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: var(--ec-bg);
   color: var(--ec-foreground);
+}
+
+/* Global High-Contrast Text Enforcement */
+h1, h2, h3, h4, h5, h6 {
+  color: #000000 !important;
+  font-weight: 700;
+}
+
+p, span, label, strong, b, td, th {
+  color: inherit;
+}
+
+.text-muted {
+  color: #334155 !important;
+}
+
+.text-foreground {
+  color: #000000 !important;
+}
+
+/* Global override: Convert dark background classes to clean light backgrounds with deep black text */
+.dark-theme .bg-slate-900,
+.dark-theme .bg-slate-800,
+.dark-theme .bg-slate-950,
+.dark-theme .bg-black,
+.dark-theme .bg-\[\#061126\],
+.dark-theme .bg-\[\#071233\],
+.dark-theme .dark\:bg-slate-900,
+.dark-theme .dark\:bg-slate-800,
+.dark-theme .dark\:bg-slate-950,
+.dark-theme .dark\:bg-slate-900\/80,
+.dark-theme .dark\:bg-slate-800\/80,
+.dark-theme .dark\:bg-slate-800\/50,
+.dark-theme .dark\:bg-slate-800\/40,
+.dark-theme .dark\:bg-slate-900\/40 {
+  background-color: #ffffff !important;
+  color: #000000 !important;
+}
+
+/* Global high-contrast replacement for neon/faint colors */
+.text-cyan-400,
+.text-cyan-300,
+.text-cyan-200 {
+  color: #0369a1 !important;
+}
+
+.text-emerald-400,
+.text-emerald-300 {
+  color: #047857 !important;
+}
+
+.text-purple-400,
+.text-purple-300 {
+  color: #6b21a8 !important;
+}
+
+.text-amber-400,
+.text-amber-300 {
+  color: #b45309 !important;
+}
+
+.text-rose-400,
+.text-rose-300 {
+  color: #be123c !important;
+}
+
+.text-blue-400,
+.text-blue-300 {
+  color: #1d4ed8 !important;
+}
+
+/* Clear Badges & Tags */
+.bg-cyan-500\/10,
+.bg-cyan-500\/15,
+.bg-cyan-500\/20 {
+  background-color: #f0f9ff !important;
+  border-color: #bae6fd !important;
+  color: #0369a1 !important;
+}
+
+.bg-purple-500\/10,
+.bg-purple-500\/15,
+.bg-purple-500\/20 {
+  background-color: #faf5ff !important;
+  border-color: #e9d5ff !important;
+  color: #6b21a8 !important;
+}
+
+.bg-emerald-500\/10,
+.bg-emerald-500\/15,
+.bg-emerald-500\/20 {
+  background-color: #f0fdf4 !important;
+  border-color: #bbf7d0 !important;
+  color: #047857 !important;
+}
+
+.bg-amber-500\/10,
+.bg-amber-500\/15,
+.bg-amber-500\/20 {
+  background-color: #fffbeb !important;
+  border-color: #fde68a !important;
+  color: #b45309 !important;
+}
+
+.bg-red-500\/10,
+.bg-red-500\/15,
+.bg-red-500\/20,
+.bg-rose-500\/10,
+.bg-rose-500\/15,
+.bg-rose-500\/20 {
+  background-color: #fff1f2 !important;
+  border-color: #fecdd3 !important;
+  color: #be123c !important;
 }
 
 * {
@@ -46,18 +159,15 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  @apply rounded-full bg-slate-700;
+  @apply rounded-full bg-slate-300;
 }
 
 .ec-card {
   background: var(--ec-card);
   border: 1px solid var(--ec-border);
   border-radius: 16px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
 }
-
-.text-foreground { color: var(--ec-foreground); }
-.text-muted { color: var(--ec-muted); }
 
 .brand-logo {
   display: inline-block;
@@ -68,11 +178,11 @@ body {
 }
 
 .app-header {
-  background: linear-gradient(90deg, #0b69ff 0%, #0a58e6 100%);
-  color: white;
+  background: linear-gradient(90deg, #1d4ed8 0%, #2563eb 100%);
+  color: #ffffff;
   padding: 12px 16px;
   border-radius: 0;
-  box-shadow: 0 4px 20px rgba(11,105,255,0.12);
+  box-shadow: 0 4px 20px rgba(29, 78, 216, 0.15);
 }
 
 @media (min-width: 1024px) {
@@ -84,32 +194,32 @@ body {
 }
 
 .app-header p {
-  color: rgba(255,255,255,0.9);
+  color: rgba(255, 255, 255, 0.95);
 }
 
 .kpi {
   background: var(--ec-card);
-  color: var(--ec-foreground);
+  color: #000000;
   border-radius: 16px;
   padding: 16px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
   border: 1px solid var(--ec-border);
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .kpi:hover {
   transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
 }
 
 .primary-btn {
-  background: linear-gradient(135deg, #0b69ff 0%, #06b6d4 100%);
-  color: #fff;
+  background: linear-gradient(135deg, #1d4ed8 0%, #0284c7 100%);
+  color: #ffffff;
   border-radius: 12px;
   padding: 10px 18px;
-  font-weight: 600;
+  font-weight: 700;
   font-size: 14px;
-  box-shadow: 0 4px 14px rgba(11,105,255,0.25);
+  box-shadow: 0 4px 14px rgba(29, 78, 216, 0.25);
   transition: all 0.2s ease;
   display: inline-flex;
   align-items: center;
@@ -120,7 +230,7 @@ body {
 .primary-btn:hover {
   opacity: 0.95;
   transform: translateY(-1px);
-  box-shadow: 0 6px 20px rgba(11,105,255,0.35);
+  box-shadow: 0 6px 20px rgba(29, 78, 216, 0.35);
 }
 
 .mobile-nav {
@@ -133,7 +243,7 @@ body {
   align-items: center;
   height: 64px;
   padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
-  background: rgba(255, 255, 255, 0.92);
+  background: #ffffff;
   border-top: 1px solid var(--ec-border);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
@@ -142,19 +252,19 @@ body {
 }
 
 .dark-theme .mobile-nav {
-  background: rgba(10, 20, 45, 0.94);
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.35);
+  background: #ffffff;
+  border-top: 1px solid var(--ec-border);
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.06);
 }
 
 input,
 select,
 textarea {
-  background: var(--ec-surface);
-  border: 1px solid var(--ec-border);
+  background: #ffffff !important;
+  border: 1px solid var(--ec-border) !important;
   padding: 9px 12px;
   border-radius: 12px;
-  color: var(--ec-foreground);
+  color: #000000 !important;
   font-size: 14px;
   width: 100%;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
@@ -163,40 +273,30 @@ textarea {
 input:focus,
 select:focus,
 textarea:focus {
-  border-color: #06b6d4;
+  border-color: #1d4ed8 !important;
   outline: none;
-  box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.15);
-}
-
-.dark-theme {
-  color-scheme: dark;
-  --ec-bg: #061126;
-  --ec-surface: #071233;
-  --ec-card: rgba(255,255,255,0.04);
-  --ec-muted: #94a3b8;
-  --ec-primary: #0b69ff;
-  --ec-foreground: #e6eef8;
-  --ec-border: rgba(255,255,255,0.12);
+  box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.15);
 }
 
 .dark-theme input,
 .dark-theme select,
 .dark-theme textarea {
-  background: rgba(255,255,255,0.04);
-  border-color: rgba(255,255,255,0.12);
+  background: #ffffff !important;
+  border-color: var(--ec-border) !important;
+  color: #000000 !important;
 }
 
 .dark-theme input::placeholder,
 .dark-theme select::placeholder,
 .dark-theme textarea::placeholder {
-  color: rgba(230,238,248,0.55);
+  color: #64748b !important;
 }
 
 .dark-theme .kpi {
-  background: rgba(255,255,255,0.04);
-  color: #e6eef8;
-  box-shadow: none;
-  border: 1px solid rgba(255,255,255,0.08);
+  background: #ffffff !important;
+  color: #000000 !important;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+  border: 1px solid var(--ec-border) !important;
 }
 
 @keyframes fadeIn {
@@ -250,9 +350,9 @@ textarea:focus {
 .skeleton-shimmer {
   background: linear-gradient(
     90deg,
-    rgba(15, 23, 42, 0.06) 25%,
-    rgba(15, 23, 42, 0.12) 37%,
-    rgba(15, 23, 42, 0.06) 63%
+    rgba(15, 23, 42, 0.04) 25%,
+    rgba(15, 23, 42, 0.08) 37%,
+    rgba(15, 23, 42, 0.04) 63%
   );
   background-size: 400% 100%;
   animation: shimmer 1.4s ease infinite;
@@ -261,13 +361,10 @@ textarea:focus {
 .dark-theme .skeleton-shimmer {
   background: linear-gradient(
     90deg,
-    rgba(255, 255, 255, 0.04) 25%,
-    rgba(255, 255, 255, 0.1) 37%,
-    rgba(255, 255, 255, 0.04) 63%
+    rgba(15, 23, 42, 0.04) 25%,
+    rgba(15, 23, 42, 0.08) 37%,
+    rgba(15, 23, 42, 0.04) 63%
   );
   background-size: 400% 100%;
   animation: shimmer 1.4s ease infinite;
 }
-
-
-

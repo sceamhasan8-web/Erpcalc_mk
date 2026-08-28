@@ -20,6 +20,8 @@ import type {
   WarehouseStock,
   MaterialReceival,
   OrderProductionPlan,
+  Employee,
+  DailyManpowerRecord,
 } from '@/types';
 
 // Generic subscription helper
@@ -256,4 +258,26 @@ export const firebaseService = {
     subscribeToDocument<T>('settings', settingKey, callback),
   saveSettings: <T extends DocumentData>(settingKey: string, data: T) =>
     saveDocument('settings', settingKey, data),
+
+  // HR Employees (Manpower)
+  getEmployees: () => getCollectionData<Employee>('hr_employees'),
+  subscribeEmployees: (callback: (data: Employee[]) => void) =>
+    subscribeToCollection<Employee>('hr_employees', callback),
+  saveEmployee: (emp: Employee) => {
+    const id = emp.id || `emp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    return saveDocument('hr_employees', id, { ...emp, id });
+  },
+  updateEmployee: (id: string, updates: Partial<Employee>) =>
+    updateDocumentData('hr_employees', id, updates),
+  deleteEmployee: (id: string) => removeDocument('hr_employees', id),
+
+  // HR Daily Section-Wise Manpower Records
+  getDailyManpowerRecords: () => getCollectionData<DailyManpowerRecord>('hr_daily_manpower'),
+  subscribeDailyManpower: (callback: (data: DailyManpowerRecord[]) => void) =>
+    subscribeToCollection<DailyManpowerRecord>('hr_daily_manpower', callback),
+  saveDailyManpower: (record: DailyManpowerRecord) => {
+    const id = record.date || record.id || new Date().toISOString().split('T')[0];
+    return saveDocument('hr_daily_manpower', id, { ...record, id, date: id, updatedAt: new Date().toISOString() });
+  },
+  deleteDailyManpower: (date: string) => removeDocument('hr_daily_manpower', date),
 };

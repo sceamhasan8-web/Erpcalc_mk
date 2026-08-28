@@ -39,9 +39,9 @@ export interface AuthUser {
 }
 
 export interface LoginCredentials {
-  sectionId: SectionId;
-  username?: string;
-  password?: string;
+  username: string;
+  password: string;
+  sectionId?: SectionId;
 }
 
 // HR-managed user accounts stored in Firestore
@@ -53,6 +53,7 @@ export interface HRUser {
   email: string;
   sectionId: SectionId;
   role: string;
+  allowedRoutes?: string[]; // Custom module access permissions configured by HR
   isActive: boolean;
   createdAt: string;
   updatedAt: string;

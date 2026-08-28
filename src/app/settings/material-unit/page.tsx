@@ -17,16 +17,6 @@ export default function MaterialUnitPage() {
   useEffect(() => {
     setSettings(getMaterialUnitSettings());
 
-    // Fetch latest from server
-    fetch('/api/settings?key=materialUnit', { cache: 'no-store' })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data && data.defaultMaterialUnit) {
-          setSettings(data);
-        }
-      })
-      .catch(() => {});
-
     const handleUpdate = () => {
       setSettings(getMaterialUnitSettings());
     };

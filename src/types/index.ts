@@ -217,6 +217,7 @@ export interface SectionPlanTarget {
   manpower?: number;
   workingHours?: number;
   notes?: string;
+  dailyBreakdown?: Record<string, number>; // date "YYYY-MM-DD" -> target number
 }
 
 export interface OrderProductionPlan {
@@ -230,8 +231,51 @@ export interface OrderProductionPlan {
   startDate?: string;
   targetDeliveryDate?: string;
   sections: Record<string, SectionPlanTarget>;
+  dateWiseTargets?: Record<string, Record<string, number>>; // dept -> { [dateStr]: target }
   status?: 'Planned' | 'In Progress' | 'On Track' | 'Delayed' | 'Completed';
   updatedAt: string;
+}
+
+export type EmployeeDesignation = 'Manager' | 'Incharge' | 'Supervisor' | 'Worker';
+export type AttendanceStatus = 'Present' | 'Absent' | 'Late' | 'Leave';
+
+export interface Employee {
+  id: ID;
+  employeeCode: string;
+  name: string;
+  section: string;
+  designation: EmployeeDesignation;
+  phone?: string;
+  joiningDate?: string;
+  shift?: 'Day' | 'Night' | 'General';
+  status: 'Active' | 'Inactive';
+  dailyRate?: number;
+  notes?: string;
+  createdAt: string;
+}
+
+export interface SectionManpowerCount {
+  section: string;
+  managers: number;
+  incharges: number;
+  supervisors: number;
+  workers: number;
+  total: number;
+  notes?: string;
+}
+
+export interface DailyManpowerRecord {
+  id: string; // date YYYY-MM-DD
+  date: string; // YYYY-MM-DD
+  sections: Record<string, SectionManpowerCount>;
+  totalManagers: number;
+  totalIncharges: number;
+  totalSupervisors: number;
+  totalWorkers: number;
+  totalManpower: number;
+  recordedBy?: string;
+  updatedAt: string;
+  notes?: string;
 }
 
 export type {

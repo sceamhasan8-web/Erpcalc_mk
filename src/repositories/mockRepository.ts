@@ -28,9 +28,114 @@ import type {
   Article,
   BuyerOrder,
   OrderProductionPlan,
+  DailyManpowerRecord,
+  Employee,
 } from '@/types';
 
 const defaultProductionPlans: OrderProductionPlan[] = [];
+
+const initialEmployees: Employee[] = [
+  // Cutting
+  { id: 'emp_1', employeeCode: 'CUT-01', name: 'Md. Rafiqul Islam', section: 'Cutting', designation: 'Manager', phone: '01711000001', status: 'Active', shift: 'Day', createdAt: '2024-01-10' },
+  { id: 'emp_2', employeeCode: 'CUT-02', name: 'Al-Amin Hossain', section: 'Cutting', designation: 'Incharge', phone: '01711000002', status: 'Active', shift: 'Day', createdAt: '2024-02-15' },
+  { id: 'emp_3', employeeCode: 'CUT-03', name: 'Kamal Uddin', section: 'Cutting', designation: 'Supervisor', phone: '01711000003', status: 'Active', shift: 'Day', createdAt: '2024-03-01' },
+  { id: 'emp_4', employeeCode: 'CUT-04', name: 'Sumon Mia', section: 'Cutting', designation: 'Worker', phone: '01711000004', status: 'Active', shift: 'Day', createdAt: '2024-03-05' },
+  { id: 'emp_5', employeeCode: 'CUT-05', name: 'Jahangir Alam', section: 'Cutting', designation: 'Worker', phone: '01711000005', status: 'Active', shift: 'Day', createdAt: '2024-03-10' },
+];
+
+const initialDailyManpower: DailyManpowerRecord[] = [
+  {
+    id: '2026-08-27',
+    date: '2026-08-27',
+    totalManagers: 6,
+    totalIncharges: 8,
+    totalSupervisors: 14,
+    totalWorkers: 195,
+    totalManpower: 223,
+    notes: 'Normal full floor operations',
+    updatedAt: '2026-08-27T08:30:00.000Z',
+    sections: {
+      'Cutting': { section: 'Cutting', managers: 1, incharges: 1, supervisors: 2, workers: 28, total: 32 },
+      'Sewing': { section: 'Sewing', managers: 1, incharges: 2, supervisors: 4, workers: 65, total: 72 },
+      'Lasting & DIP': { section: 'Lasting & DIP', managers: 1, incharges: 1, supervisors: 2, workers: 35, total: 39 },
+      'Warehouse': { section: 'Warehouse', managers: 1, incharges: 1, supervisors: 1, workers: 12, total: 15 },
+      'Goods Store': { section: 'Goods Store', managers: 0, incharges: 1, supervisors: 1, workers: 8, total: 10 },
+      'Packing': { section: 'Packing', managers: 1, incharges: 1, supervisors: 2, workers: 22, total: 26 },
+      'Lamination & Preparation': { section: 'Lamination & Preparation', managers: 0, incharges: 1, supervisors: 1, workers: 10, total: 12 },
+      'Printing & Embossing': { section: 'Printing & Embossing', managers: 0, incharges: 0, supervisors: 1, workers: 6, total: 7 },
+      'Quality Assurance': { section: 'Quality Assurance', managers: 1, incharges: 0, supervisors: 0, workers: 5, total: 6 },
+      'Maintenance & Utility': { section: 'Maintenance & Utility', managers: 0, incharges: 0, supervisors: 0, workers: 4, total: 4 },
+    }
+  },
+  {
+    id: '2026-08-26',
+    date: '2026-08-26',
+    totalManagers: 6,
+    totalIncharges: 8,
+    totalSupervisors: 14,
+    totalWorkers: 192,
+    totalManpower: 220,
+    notes: 'Overtime in sewing line 2',
+    updatedAt: '2026-08-26T08:30:00.000Z',
+    sections: {
+      'Cutting': { section: 'Cutting', managers: 1, incharges: 1, supervisors: 2, workers: 27, total: 31 },
+      'Sewing': { section: 'Sewing', managers: 1, incharges: 2, supervisors: 4, workers: 66, total: 73 },
+      'Lasting & DIP': { section: 'Lasting & DIP', managers: 1, incharges: 1, supervisors: 2, workers: 34, total: 38 },
+      'Warehouse': { section: 'Warehouse', managers: 1, incharges: 1, supervisors: 1, workers: 12, total: 15 },
+      'Goods Store': { section: 'Goods Store', managers: 0, incharges: 1, supervisors: 1, workers: 8, total: 10 },
+      'Packing': { section: 'Packing', managers: 1, incharges: 1, supervisors: 2, workers: 21, total: 25 },
+      'Lamination & Preparation': { section: 'Lamination & Preparation', managers: 0, incharges: 1, supervisors: 1, workers: 10, total: 12 },
+      'Printing & Embossing': { section: 'Printing & Embossing', managers: 0, incharges: 0, supervisors: 1, workers: 6, total: 7 },
+      'Quality Assurance': { section: 'Quality Assurance', managers: 1, incharges: 0, supervisors: 0, workers: 4, total: 5 },
+      'Maintenance & Utility': { section: 'Maintenance & Utility', managers: 0, incharges: 0, supervisors: 0, workers: 4, total: 4 },
+    }
+  },
+  {
+    id: '2026-08-25',
+    date: '2026-08-25',
+    totalManagers: 6,
+    totalIncharges: 8,
+    totalSupervisors: 13,
+    totalWorkers: 188,
+    totalManpower: 215,
+    notes: 'Rainfall delay morning shift',
+    updatedAt: '2026-08-25T08:30:00.000Z',
+    sections: {
+      'Cutting': { section: 'Cutting', managers: 1, incharges: 1, supervisors: 2, workers: 26, total: 30 },
+      'Sewing': { section: 'Sewing', managers: 1, incharges: 2, supervisors: 4, workers: 63, total: 70 },
+      'Lasting & DIP': { section: 'Lasting & DIP', managers: 1, incharges: 1, supervisors: 2, workers: 33, total: 37 },
+      'Warehouse': { section: 'Warehouse', managers: 1, incharges: 1, supervisors: 1, workers: 12, total: 15 },
+      'Goods Store': { section: 'Goods Store', managers: 0, incharges: 1, supervisors: 1, workers: 8, total: 10 },
+      'Packing': { section: 'Packing', managers: 1, incharges: 1, supervisors: 1, workers: 22, total: 25 },
+      'Lamination & Preparation': { section: 'Lamination & Preparation', managers: 0, incharges: 1, supervisors: 1, workers: 9, total: 11 },
+      'Printing & Embossing': { section: 'Printing & Embossing', managers: 0, incharges: 0, supervisors: 1, workers: 6, total: 7 },
+      'Quality Assurance': { section: 'Quality Assurance', managers: 1, incharges: 0, supervisors: 0, workers: 5, total: 6 },
+      'Maintenance & Utility': { section: 'Maintenance & Utility', managers: 0, incharges: 0, supervisors: 0, workers: 4, total: 4 },
+    }
+  },
+  {
+    id: '2026-08-24',
+    date: '2026-08-24',
+    totalManagers: 6,
+    totalIncharges: 8,
+    totalSupervisors: 14,
+    totalWorkers: 190,
+    totalManpower: 218,
+    updatedAt: '2026-08-24T08:30:00.000Z',
+    sections: {
+      'Cutting': { section: 'Cutting', managers: 1, incharges: 1, supervisors: 2, workers: 27, total: 31 },
+      'Sewing': { section: 'Sewing', managers: 1, incharges: 2, supervisors: 4, workers: 64, total: 71 },
+      'Lasting & DIP': { section: 'Lasting & DIP', managers: 1, incharges: 1, supervisors: 2, workers: 34, total: 38 },
+      'Warehouse': { section: 'Warehouse', managers: 1, incharges: 1, supervisors: 1, workers: 12, total: 15 },
+      'Goods Store': { section: 'Goods Store', managers: 0, incharges: 1, supervisors: 1, workers: 8, total: 10 },
+      'Packing': { section: 'Packing', managers: 1, incharges: 1, supervisors: 2, workers: 21, total: 25 },
+      'Lamination & Preparation': { section: 'Lamination & Preparation', managers: 0, incharges: 1, supervisors: 1, workers: 10, total: 12 },
+      'Printing & Embossing': { section: 'Printing & Embossing', managers: 0, incharges: 0, supervisors: 1, workers: 6, total: 7 },
+      'Quality Assurance': { section: 'Quality Assurance', managers: 1, incharges: 0, supervisors: 0, workers: 5, total: 6 },
+      'Maintenance & Utility': { section: 'Maintenance & Utility', managers: 0, incharges: 0, supervisors: 0, workers: 3, total: 3 },
+    }
+  }
+];
 
 const STORAGE_KEYS = {
   buyers: 'ec-buyers',
@@ -42,6 +147,8 @@ const STORAGE_KEYS = {
   materialReceivals: 'ec-material-receivals',
   departments: 'ec-departments',
   articles: 'ec-articles',
+  employees: 'ec-employees-v1',
+  dailyManpower: 'ec-daily-manpower-v2',
   initialized: 'ec-storage-initialized-v2',
 };
 
@@ -88,6 +195,8 @@ export class MockRepository {
     hydrateList(STORAGE_KEYS.materialReceivals, materialReceivals);
     hydrateList(STORAGE_KEYS.departments, departments);
     hydrateList(STORAGE_KEYS.articles, articles);
+    hydrateList(STORAGE_KEYS.employees, initialEmployees);
+    hydrateList(STORAGE_KEYS.dailyManpower, initialDailyManpower);
   }
 
   private persist(key: string, data: any) {
@@ -108,6 +217,8 @@ export class MockRepository {
   private persistMaterialReceivals() { this.persist(STORAGE_KEYS.materialReceivals, materialReceivals); }
   private persistDepartments() { this.persist(STORAGE_KEYS.departments, departments); }
   private persistArticles() { this.persist(STORAGE_KEYS.articles, articles); }
+  private persistEmployees() { this.persist(STORAGE_KEYS.employees, initialEmployees); }
+  private persistDailyManpower() { this.persist(STORAGE_KEYS.dailyManpower, initialDailyManpower); }
 
   getBuyers(): Buyer[] {
     this.ensureHydrated();
@@ -489,6 +600,89 @@ export class MockRepository {
     if (idx !== -1) {
       defaultProductionPlans.splice(idx, 1);
       this.persistProductionPlans();
+      return true;
+    }
+    return false;
+  }
+
+  // ── Employee (Manpower) Methods ──────────────────────────────────────────
+  getEmployees(): Employee[] {
+    this.ensureHydrated();
+    return [...initialEmployees];
+  }
+
+  setEmployees(list: Employee[]) {
+    this.ensureHydrated();
+    initialEmployees.length = 0;
+    initialEmployees.push(...list);
+    this.persistEmployees();
+  }
+
+  addEmployee(employee: Employee): Employee {
+    this.ensureHydrated();
+    initialEmployees.unshift(employee);
+    this.persistEmployees();
+    return employee;
+  }
+
+  updateEmployee(id: string, updates: Partial<Employee>): Employee | null {
+    this.ensureHydrated();
+    const idx = initialEmployees.findIndex((e) => e.id === id);
+    if (idx !== -1) {
+      initialEmployees[idx] = { ...initialEmployees[idx], ...updates };
+      this.persistEmployees();
+      return initialEmployees[idx];
+    }
+    return null;
+  }
+
+  deleteEmployee(id: string): boolean {
+    this.ensureHydrated();
+    const idx = initialEmployees.findIndex((e) => e.id === id);
+    if (idx !== -1) {
+      initialEmployees.splice(idx, 1);
+      this.persistEmployees();
+      return true;
+    }
+    return false;
+  }
+
+  // ── Daily Section Manpower Methods ──────────────────────────────────────
+  getDailyManpowerRecords(): DailyManpowerRecord[] {
+    this.ensureHydrated();
+    return [...initialDailyManpower];
+  }
+
+  setDailyManpowerRecords(list: DailyManpowerRecord[]) {
+    this.ensureHydrated();
+    initialDailyManpower.length = 0;
+    initialDailyManpower.push(...list);
+    this.persistDailyManpower();
+  }
+
+  getDailyManpowerByDate(date: string): DailyManpowerRecord | undefined {
+    this.ensureHydrated();
+    return initialDailyManpower.find((r) => r.date === date);
+  }
+
+  saveDailyManpower(record: DailyManpowerRecord): DailyManpowerRecord {
+    this.ensureHydrated();
+    const idx = initialDailyManpower.findIndex((r) => r.date === record.date);
+    if (idx !== -1) {
+      initialDailyManpower[idx] = { ...initialDailyManpower[idx], ...record, updatedAt: new Date().toISOString() };
+    } else {
+      initialDailyManpower.unshift({ ...record, id: record.date, updatedAt: new Date().toISOString() });
+    }
+    this.persistDailyManpower();
+    return idx !== -1 ? initialDailyManpower[idx] : initialDailyManpower[0];
+  }
+
+  deleteDailyManpower(date: string): boolean {
+    this.ensureHydrated();
+    const idx = initialDailyManpower.findIndex((r) => r.date === date);
+    if (idx !== -1) {
+      initialDailyManpower.splice(idx, 1);
+      this.persistDailyManpower();
       return true;
     }
     return false;

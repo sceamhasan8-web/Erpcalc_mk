@@ -5,6 +5,7 @@ import { apiService } from '@/services/apiService';
 import { firebaseService } from '@/services/firebaseService';
 import { useModal } from '@/context/ModalContext';
 import { useProductionUnit, getProductionUnit, DEFAULT_PRODUCTION_UNITS } from '@/lib/unitSettings';
+import { calculateMultiProcessProduction } from '@/lib/productionUtils';
 import type { Article, Buyer, BuyerOrder, Order, ProductionFlow, Department } from '@/types';
 import { Star, Mail, Phone, MapPin, Building, ArrowLeft, Package, TrendingUp, Calendar } from 'lucide-react';
 
@@ -112,9 +113,8 @@ export function BuyerDetailPage({ buyerId }: BuyerDetailPageProps) {
     const pendingDepts: string[] = [];
 
     order.requiredDepartments.forEach((dept) => {
-      const deptFlows = orderFlows.filter((pf) => pf.department === dept);
-      const totalCompleted = deptFlows.reduce((sum, f) => sum + f.completed, 0);
-      if (totalCompleted >= order.quantity) {
+      const res = calculateMultiProcessProduction(orderFlows, dept, [], order.quantity || 0);
+      if (res.totalCompleted >= (order.quantity || 0) && (order.quantity || 0) > 0) {
         completedDepts.push(dept);
       } else {
         pendingDepts.push(dept);

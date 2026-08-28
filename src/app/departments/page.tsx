@@ -1,5 +1,3 @@
-"use client";
-
 import { DepartmentsPage } from '@/features/departments/DepartmentsPage';
 
 export default function Page() {

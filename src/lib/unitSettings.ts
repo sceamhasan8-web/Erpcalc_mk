@@ -3,10 +3,19 @@
 import { useEffect, useState } from 'react';
 import { saveDocument, subscribeToDocument } from '@/services/firebaseService';
 
+export const PRODUCTION_UNIT_KEY = 'erp_production_unit';
+export const PRODUCTION_UNIT_SETTINGS_KEY = 'erp_production_unit_settings';
+
+export const MATERIAL_UNIT_KEY = 'erp_material_unit';
+export const MATERIAL_UNIT_SETTINGS_KEY = 'erp_material_unit_settings';
+
+export const DEFAULT_PRODUCTION_UNITS = ['Pair', 'Pcs', 'Dzn', 'Set'];
+export const DEFAULT_MATERIAL_UNITS = ['pcs', 'meter', 'yard', 'kg', 'ltr', 'roll', 'sheet', 'box', 'cone', 'pack'];
+
 export interface ProductionUnitSettings {
   defaultUnit: string;
-  batchSize?: number;
-  conversionNotes?: string;
+  autoFormatOutputs: boolean;
+  notes?: string;
 }
 
 export interface MaterialUnitSettings {
@@ -15,16 +24,8 @@ export interface MaterialUnitSettings {
   notes?: string;
 }
 
-export const PRODUCTION_UNIT_SETTINGS_KEY = 'ec-production-unit-settings';
-export const PRODUCTION_UNIT_KEY = 'ec-production-unit';
-export const MATERIAL_UNIT_SETTINGS_KEY = 'ec-material-unit-settings';
-export const MATERIAL_UNIT_KEY = 'ec-material-unit';
-
-export const DEFAULT_PRODUCTION_UNITS = ['pcs', 'pair', 'kg', 'm', 'liters', 'dozen', 'box', 'set'];
-export const DEFAULT_MATERIAL_UNITS = ['pcs', 'kg', 'meter', 'liters', 'rolls', 'yards', 'cones'];
-
 export function getProductionUnit(): string {
-  if (typeof window === 'undefined') return 'pcs';
+  if (typeof window === 'undefined') return 'Pair';
   try {
     const rawSettings = localStorage.getItem(PRODUCTION_UNIT_SETTINGS_KEY);
     if (rawSettings) {
@@ -36,11 +37,11 @@ export function getProductionUnit(): string {
   } catch {
     // fallback
   }
-  return 'pcs';
+  return 'Pair';
 }
 
 export function getProductionUnitSettings(): ProductionUnitSettings {
-  const defaultSettings: ProductionUnitSettings = { defaultUnit: 'pcs', batchSize: 1, conversionNotes: '' };
+  const defaultSettings: ProductionUnitSettings = { defaultUnit: 'Pair', autoFormatOutputs: true, notes: '' };
   if (typeof window === 'undefined') return defaultSettings;
   try {
     const raw = localStorage.getItem(PRODUCTION_UNIT_SETTINGS_KEY);
@@ -72,13 +73,6 @@ export function saveProductionUnitSettings(settings: ProductionUnitSettings): vo
     saveDocument('settings', 'productionUnit', settings).catch((err) => {
       console.warn('Firestore sync note:', err);
     });
-
-    // 3. Central REST API Sync (MongoDB / Server Sync for all networks and devices)
-    fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key: 'productionUnit', value: settings }),
-    }).catch(() => {});
   } catch (e) {
     console.error('Failed to save production unit settings', e);
   }
@@ -133,13 +127,6 @@ export function saveMaterialUnitSettings(settings: MaterialUnitSettings): void {
     saveDocument('settings', 'materialUnit', settings).catch((err) => {
       console.warn('Firestore sync note:', err);
     });
-
-    // 3. Central REST API Sync (MongoDB / Server Sync for all networks and devices)
-    fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key: 'materialUnit', value: settings }),
-    }).catch(() => {});
   } catch (e) {
     console.error('Failed to save material unit settings', e);
   }
@@ -165,7 +152,7 @@ export function useProductionUnit(): string {
       setUnit(getProductionUnit());
     }
 
-    // 1. Subscribe to Firestore Real-time Multi-Device Sync
+    // Subscribe to Firestore Real-time Multi-Device Sync
     const unsubscribeFirestore = subscribeToDocument<ProductionUnitSettings>(
       'settings',
       'productionUnit',
@@ -174,34 +161,15 @@ export function useProductionUnit(): string {
       }
     );
 
-    // 2. Polling / Fetch from Central Server API for all cross-device clients
-    async function syncFromServer() {
-      try {
-        const res = await fetch('/api/settings?key=productionUnit', { cache: 'no-store' });
-        if (res.ok) {
-          const data = await res.json();
-          if (data && data.defaultUnit) {
-            applyNewUnit(data);
-          }
-        }
-      } catch {}
-    }
-
-    syncFromServer();
-    const interval = setInterval(syncFromServer, 3000);
-
     window.addEventListener('erp:productionUnitUpdated', handleLocalUpdate);
     window.addEventListener('erp:unitSettingsUpdated', handleLocalUpdate);
     window.addEventListener('storage', handleLocalUpdate);
-    window.addEventListener('focus', syncFromServer);
 
     return () => {
-      clearInterval(interval);
       unsubscribeFirestore();
       window.removeEventListener('erp:productionUnitUpdated', handleLocalUpdate);
       window.removeEventListener('erp:unitSettingsUpdated', handleLocalUpdate);
       window.removeEventListener('storage', handleLocalUpdate);
-      window.removeEventListener('focus', syncFromServer);
     };
   }, []);
 
@@ -228,7 +196,7 @@ export function useMaterialUnit(): string {
       setUnit(getMaterialUnit());
     }
 
-    // 1. Subscribe to Firestore Real-time Multi-Device Sync
+    // Subscribe to Firestore Real-time Multi-Device Sync
     const unsubscribeFirestore = subscribeToDocument<MaterialUnitSettings>(
       'settings',
       'materialUnit',
@@ -237,34 +205,15 @@ export function useMaterialUnit(): string {
       }
     );
 
-    // 2. Polling / Fetch from Central Server API for all cross-device clients
-    async function syncFromServer() {
-      try {
-        const res = await fetch('/api/settings?key=materialUnit', { cache: 'no-store' });
-        if (res.ok) {
-          const data = await res.json();
-          if (data && data.defaultMaterialUnit) {
-            applyNewUnit(data);
-          }
-        }
-      } catch {}
-    }
-
-    syncFromServer();
-    const interval = setInterval(syncFromServer, 3000);
-
     window.addEventListener('erp:materialUnitUpdated', handleLocalUpdate);
     window.addEventListener('erp:unitSettingsUpdated', handleLocalUpdate);
     window.addEventListener('storage', handleLocalUpdate);
-    window.addEventListener('focus', syncFromServer);
 
     return () => {
-      clearInterval(interval);
       unsubscribeFirestore();
       window.removeEventListener('erp:materialUnitUpdated', handleLocalUpdate);
       window.removeEventListener('erp:unitSettingsUpdated', handleLocalUpdate);
       window.removeEventListener('storage', handleLocalUpdate);
-      window.removeEventListener('focus', syncFromServer);
     };
   }, []);
 

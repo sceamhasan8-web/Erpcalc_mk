@@ -1,8 +1,11 @@
 "use client";
 
 import React, { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useRouter } from 'next/navigation';
 import { apiService } from '@/services/apiService';
 import { firebaseService } from '@/services/firebaseService';
+import { mockRepository } from '@/repositories/mockRepository';
+import { erpService } from '@/services/erpService';
 import { useModal } from '@/context/ModalContext';
 import { useProductionUnit } from '@/lib/unitSettings';
 import type { ProductionFlow, BuyerOrder, BuyerOrderItem, Department, OrderProductionPlan, SectionPlanTarget } from '@/types';
@@ -31,6 +34,8 @@ import {
   Sliders
 } from 'lucide-react';
 
+import { calculateMultiProcessProduction, isMultiProcessDept } from '@/lib/productionUtils';
+
 const GENDER_CATEGORIES = [
   { id: 'mens' as const, label: "Men's", rangeText: '40# - 46#', sizes: [40, 41, 42, 43, 44, 45, 46] },
   { id: 'womens' as const, label: "Women's", rangeText: '35# - 41#', sizes: [35, 36, 37, 38, 39, 40, 41] },
@@ -42,20 +47,25 @@ const DEFAULT_PROCESSES: Record<string, string[]> = {
   embossing: [],
 };
 
-function isMultiProcessDept(dept: string): boolean {
-  const lower = (dept || '').toLowerCase().trim();
-  return lower === 'printing' || lower === 'embossing';
-}
-
 export function ProductionPage() {
+  const router = useRouter();
   const defaultProductionUnit = useProductionUnit();
   const { showAlert, showConfirm, toast } = useModal();
 
-  const [flows, setFlows] = useState<ProductionFlow[]>([]);
-  const [buyerOrders, setBuyerOrders] = useState<BuyerOrder[]>([]);
-  const [departments, setDepartments] = useState<string[]>([]);
-  const [plans, setPlans] = useState<OrderProductionPlan[]>([]);
-  const [loading, setLoading] = useState(true);
+  const navigateToOrder = (orderId?: string, orderNumber?: string) => {
+    const q = orderNumber || orderId;
+    if (q) {
+      router.push(`/orders?search=${encodeURIComponent(q)}`);
+    } else {
+      router.push('/orders');
+    }
+  };
+
+  const [flows, setFlows] = useState<ProductionFlow[]>(() => mockRepository.getProductionFlows());
+  const [buyerOrders, setBuyerOrders] = useState<BuyerOrder[]>(() => mockRepository.getBuyerOrders());
+  const [departments, setDepartments] = useState<string[]>(() => erpService.getDepartments().filter((d) => d.name.toLowerCase() !== 'warehouse').map((d) => d.name));
+  const [plans, setPlans] = useState<OrderProductionPlan[]>(() => erpService.getProductionPlans());
+  const [loading, setLoading] = useState<boolean>(false);
 
   // Active navigation view: defaults to 'history' (Production Entry List)
   const [activeTab, setActiveTab] = useState<'history' | 'entry' | 'monitoring'>('history');
@@ -110,41 +120,20 @@ export function ProductionPage() {
   const [historyDeptFilter, setHistoryDeptFilter] = useState<string>('all');
   const [historyStartDate, setHistoryStartDate] = useState<string>('');
   const [historyEndDate, setHistoryEndDate] = useState<string>('');
-  const [productionViewMode, setProductionViewMode] = useState<'total' | 'size'>('total');
+  const [productionViewMode, setProductionViewMode] = useState<'total' | 'size' | 'section-daily'>('total');
   const [expandedOrderIds, setExpandedOrderIds] = useState<Set<string>>(new Set());
+  const [expandedGroupKeys, setExpandedGroupKeys] = useState<Set<string>>(new Set());
+  const [expandedSizeGroupKeys, setExpandedSizeGroupKeys] = useState<Set<string>>(new Set());
+  const [selectedFlowDetail, setSelectedFlowDetail] = useState<ProductionFlow | null>(null);
 
-  // Load initial data and live real-time subscriptions
+  // Live real-time subscriptions
   useEffect(() => {
-    async function loadInitialData() {
-      try {
-        setLoading(true);
-        const [ordersData, flowsData, deptsData, plansData] = await Promise.all([
-          apiService.getBuyerOrders(),
-          apiService.getProductionFlows(),
-          apiService.getDepartments(),
-          apiService.getProductionPlans(),
-        ]);
-        setBuyerOrders(ordersData);
-        setFlows(flowsData);
-        setPlans(plansData);
-        const validDepts = deptsData
-          .filter((d) => d.name.toLowerCase() !== 'warehouse')
-          .map((d) => d.name);
-        setDepartments(validDepts);
-        if (ordersData.length > 0) {
-          setSelectedOrderId(ordersData[0].id);
-        }
-      } catch (error) {
-        console.error('Failed to load production data', error);
-      } finally {
-        setLoading(false);
-      }
-    }
-    loadInitialData();
-
     const unsubOrders = firebaseService.subscribeOrders((liveOrders) => {
       if (liveOrders && Array.isArray(liveOrders)) {
         setBuyerOrders(liveOrders);
+        if (liveOrders.length > 0 && !selectedOrderId) {
+          setSelectedOrderId((prev) => prev || liveOrders[0].id);
+        }
       }
     });
 
@@ -302,30 +291,17 @@ export function ProductionPage() {
         (!selectedItem || !f.itemId || f.itemId === selectedItem.id)
     );
 
-    if (isMultiProcessDept(deptName)) {
-      const key = deptName.toLowerCase().trim();
-      const configuredStages = customProcesses[key] || [];
-      const recordedInFlows = Array.from(new Set(deptFlows.map((f) => f.processName).filter(Boolean))) as string[];
-      const allActiveStages = Array.from(new Set([...configuredStages, ...recordedInFlows]));
+    const key = deptName.toLowerCase().trim();
+    const configuredStages = customProcesses[key] || [];
+    const res = calculateMultiProcessProduction(deptFlows, deptName, configuredStages, target);
 
-      if (allActiveStages.length === 0) {
-        const total = deptFlows.reduce((sum, f) => sum + f.completed, 0);
-        return { completed: total, target, isComplete: total >= target && target > 0, processCount: 0 };
-      }
-
-      // Calculate output sum for every stage. Any stage with 0 output will bring the minimum to 0.
-      const processTotals = allActiveStages.map((p) =>
-        deptFlows.filter((f) => f.processName === p).reduce((sum, f) => sum + f.completed, 0)
-      );
-
-      // Overall completed count is the minimum across ALL configured stages
-      const minCompleted = Math.min(...processTotals);
-      const isComplete = processTotals.every((qty) => qty >= target) && target > 0;
-      return { completed: minCompleted, target, isComplete, processCount: allActiveStages.length };
-    }
-
-    const total = deptFlows.reduce((sum, f) => sum + f.completed, 0);
-    return { completed: total, target, isComplete: total >= target && target > 0, processCount: 0 };
+    return {
+      completed: res.totalCompleted,
+      target,
+      isComplete: res.isComplete,
+      processCount: res.processCounts,
+      completedBySize: res.completedBySize,
+    };
   };
 
   // Helper to calculate progress for a specific process
@@ -341,7 +317,18 @@ export function ProductionPage() {
     const completed = pFlows.reduce((sum, f) => sum + f.completed, 0);
     const remaining = Math.max(0, target - completed);
     const isComplete = completed >= target && target > 0;
-    return { completed, target, remaining, isComplete };
+    const bySize: Record<string, number> = {};
+    pFlows.forEach((f) => {
+      if (f.sizeBreakdown) {
+        Object.entries(f.sizeBreakdown).forEach(([sz, qty]) => {
+          const n = Number(qty) || 0;
+          if (n > 0) {
+            bySize[sz] = (bySize[sz] || 0) + n;
+          }
+        });
+      }
+    });
+    return { completed, target, remaining, isComplete, bySize };
   };
 
   // Selected category & sizes config
@@ -401,24 +388,29 @@ export function ProductionPage() {
     sunday.setHours(23, 59, 59, 999);
 
     const deptFlows = flows.filter((f) => f.orderId === selectedOrder.id && f.department === selectedDepartment);
-    const totalOutput = deptFlows.reduce((sum, f) => sum + (f.completed || 0), 0);
-    
-    const todayOutput = deptFlows
-      .filter((f) => {
-        if (!f.updatedAt) return false;
-        const dt = new Date(f.updatedAt);
-        dt.setHours(0, 0, 0, 0);
-        return dt.getTime() === today.getTime();
-      })
-      .reduce((sum, f) => sum + (f.completed || 0), 0);
+    const key = selectedDepartment.toLowerCase().trim();
+    const configuredStages = customProcesses[key] || [];
 
-    const weekOutput = deptFlows
-      .filter((f) => {
-        if (!f.updatedAt) return false;
-        const dt = new Date(f.updatedAt);
-        return dt.getTime() >= monday.getTime() && dt.getTime() <= sunday.getTime();
-      })
-      .reduce((sum, f) => sum + (f.completed || 0), 0);
+    const resAll = calculateMultiProcessProduction(deptFlows, selectedDepartment, configuredStages);
+    const totalOutput = resAll.totalCompleted;
+    
+    // Calculate today's completed by comparing overall completion up to now vs before today
+    const beforeTodayFlows = deptFlows.filter((f) => {
+      if (!f.updatedAt) return false;
+      const dt = new Date(f.updatedAt);
+      return dt.getTime() < today.getTime();
+    });
+    const resBeforeToday = calculateMultiProcessProduction(beforeTodayFlows, selectedDepartment, configuredStages);
+    const todayOutput = Math.max(0, totalOutput - resBeforeToday.totalCompleted);
+
+    // Calculate this week's completed by comparing overall completion vs before Monday
+    const beforeWeekFlows = deptFlows.filter((f) => {
+      if (!f.updatedAt) return false;
+      const dt = new Date(f.updatedAt);
+      return dt.getTime() < monday.getTime();
+    });
+    const resBeforeWeek = calculateMultiProcessProduction(beforeWeekFlows, selectedDepartment, configuredStages);
+    const weekOutput = Math.max(0, totalOutput - resBeforeWeek.totalCompleted);
 
     const dailyTarget = planSection?.dailyTarget || Math.ceil((selectedOrder.quantity || 1000) / 10);
     const weeklyTarget = planSection?.weeklyTarget || (dailyTarget * 6);
@@ -446,7 +438,7 @@ export function ProductionPage() {
       weeklyPct,
       totalPct,
     };
-  }, [selectedDepartment, selectedOrder, currentPlan, flows]);
+  }, [selectedDepartment, selectedOrder, currentPlan, flows, customProcesses]);
 
   // Calculate this entry's total quantity
   const currentEntryQuantity = useMemo(() => {
@@ -853,6 +845,117 @@ export function ProductionPage() {
     };
   }, [sortedAndFilteredFlows]);
 
+  // Grouped Daily Section Production Aggregates
+  const dailySectionGroups = useMemo(() => {
+    const map: Record<string, {
+      key: string;
+      dateKey: string;
+      dateLabel: string;
+      department: string;
+      totalCompleted: number;
+      entryCount: number;
+      ordersCount: number;
+      flows: ProductionFlow[];
+      sizeBreakdown: Record<string, number>;
+      processes: Record<string, number>;
+    }> = {};
+
+    sortedAndFilteredFlows.forEach((f) => {
+      if (!f.updatedAt) return;
+      const d = new Date(f.updatedAt);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const dateKey = `${y}-${m}-${day}`;
+      const groupKey = `${dateKey}_${f.department}`;
+
+      const { date, isToday } = formatDateTime(f.updatedAt);
+      const dateLabel = isToday ? `Today (${date})` : date;
+
+      if (!map[groupKey]) {
+        map[groupKey] = {
+          key: groupKey,
+          dateKey,
+          dateLabel,
+          department: f.department,
+          totalCompleted: 0,
+          entryCount: 0,
+          ordersCount: 0,
+          flows: [],
+          sizeBreakdown: {},
+          processes: {},
+        };
+      }
+
+      map[groupKey].entryCount += 1;
+      map[groupKey].flows.push(f);
+
+      if (f.processName) {
+        map[groupKey].processes[f.processName] = (map[groupKey].processes[f.processName] || 0) + f.completed;
+      }
+
+      if (f.sizeBreakdown) {
+        Object.entries(f.sizeBreakdown).forEach(([sz, qty]) => {
+          const n = Number(qty) || 0;
+          if (n > 0) {
+            map[groupKey].sizeBreakdown[sz] = (map[groupKey].sizeBreakdown[sz] || 0) + n;
+          }
+        });
+      }
+    });
+
+    return Object.values(map).map((g) => {
+      const orderSet = new Set(g.flows.map((f) => f.orderId));
+      const isMulti = isMultiProcessDept(g.department);
+
+      let finalCompleted = 0;
+
+      if (isMulti) {
+        const key = g.department.toLowerCase().trim();
+        const configuredStages = customProcesses[key] || [];
+
+        // Group flows by unique order + item
+        const orderItemFlowMap: Record<string, ProductionFlow[]> = {};
+        g.flows.forEach((f) => {
+          const itemKey = `${f.orderId}_${f.itemId || 'default'}`;
+          if (!orderItemFlowMap[itemKey]) orderItemFlowMap[itemKey] = [];
+          orderItemFlowMap[itemKey].push(f);
+        });
+
+        Object.values(orderItemFlowMap).forEach((itemFlows) => {
+          const res = calculateMultiProcessProduction(itemFlows, g.department, configuredStages);
+          finalCompleted += res.totalCompleted;
+        });
+      } else {
+        finalCompleted = g.flows.reduce((sum, f) => sum + (f.completed || 0), 0);
+      }
+
+      return {
+        ...g,
+        totalCompleted: finalCompleted,
+        ordersCount: orderSet.size,
+      };
+    }).sort((a, b) => b.dateKey.localeCompare(a.dateKey));
+  }, [sortedAndFilteredFlows, customProcesses]);
+
+  function toggleExpandGroup(key: string) {
+    setExpandedGroupKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function toggleExpandSizeGroup(key: string) {
+    setExpandedSizeGroupKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
   // Helper date formatter
   function formatDateTime(isoString?: string) {
     if (!isoString) return { date: 'N/A', time: '', isToday: false };
@@ -1071,8 +1174,8 @@ export function ProductionPage() {
                   </h3>
                 </div>
 
-                {/* View Mode Toggle Switch (Total Production vs Size Wise Production) */}
-                <div className="flex items-center p-1 bg-[var(--ec-surface)] border border-[var(--ec-border)] rounded-xl self-start sm:self-auto gap-1">
+                {/* View Mode Toggle Switch (Total Production | Size Wise Production | Section Daily Rollup) */}
+                <div className="flex items-center p-1 bg-[var(--ec-surface)] border border-[var(--ec-border)] rounded-xl self-start sm:self-auto gap-1.5 flex-wrap">
                   <button
                     type="button"
                     onClick={() => setProductionViewMode('total')}
@@ -1098,6 +1201,37 @@ export function ProductionPage() {
                     <TrendingUp className="h-3.5 w-3.5" />
                     <span>Show Size Wise Production</span>
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setProductionViewMode('section-daily')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
+                      productionViewMode === 'section-daily'
+                        ? 'bg-gradient-to-r from-blue-600 to-cyan-500 text-white shadow-sm'
+                        : 'text-[var(--ec-muted)] hover:text-[var(--ec-foreground)]'
+                    }`}
+                  >
+                    <Factory className="h-3.5 w-3.5" />
+                    <span>Show Section Daily Total</span>
+                  </button>
+
+                  {/* Custom Section Selector Dropdown */}
+                  <div className="flex items-center gap-1.5 pl-1.5 border-l border-[var(--ec-border)]">
+                    <Filter className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400 flex-shrink-0" />
+                    <select
+                      value={historyDeptFilter}
+                      onChange={(e) => setHistoryDeptFilter(e.target.value)}
+                      className="px-2.5 py-1 rounded-lg border border-[var(--ec-border)] bg-[var(--ec-card)] text-xs font-bold text-[var(--ec-foreground)] outline-none focus:border-blue-500 shadow-xs cursor-pointer"
+                      title="Filter Specific Section"
+                    >
+                      <option value="all">🏭 All Sections</option>
+                      {departments.map((dept) => (
+                        <option key={dept} value={dept}>
+                          {dept}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               </div>
 
@@ -1118,6 +1252,193 @@ export function ProductionPage() {
                     <span>Record First Production Entry</span>
                   </button>
                 </div>
+              ) : productionViewMode === 'section-daily' ? (
+                /* SECTION-WISE DAILY PRODUCTION ROLLUP VIEW */
+                <div className="space-y-3.5">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                    {dailySectionGroups.map((group) => {
+                      const isExpanded = expandedGroupKeys.has(group.key);
+                      const isSizeExpanded = expandedSizeGroupKeys.has(group.key);
+                      const hasSizes = Object.keys(group.sizeBreakdown).length > 0;
+                      const hasProcesses = Object.keys(group.processes).length > 0;
+
+                      return (
+                        <div
+                          key={group.key}
+                          className="p-4 rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-card)] shadow-xs space-y-3 hover:border-slate-300 dark:hover:border-slate-700 transition flex flex-col justify-between"
+                        >
+                          <div className="space-y-3">
+                            {/* Header Row: Date Badge, Department, Total Output */}
+                            <div className="flex items-center justify-between gap-2.5 pb-2.5 border-b border-[var(--ec-border)]">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-mono font-bold text-xs px-2.5 py-1 rounded-lg bg-slate-100 text-slate-900 border border-slate-200 flex items-center gap-1.5 shadow-xs">
+                                  <Calendar className="h-3.5 w-3.5 text-blue-700" />
+                                  <span>{group.dateLabel}</span>
+                                </span>
+
+                                <span className="px-2.5 py-1 rounded-lg font-black text-xs bg-blue-50 text-blue-700 border border-blue-200">
+                                  {group.department}
+                                </span>
+                              </div>
+
+                              {/* Total Daily Output Badge */}
+                              <div className="text-right flex-shrink-0">
+                                <span className="inline-flex items-center gap-1 px-3 py-1 rounded-xl bg-emerald-50 border border-emerald-300 text-emerald-700 font-black text-sm">
+                                  +{group.totalCompleted.toLocaleString()} {defaultProductionUnit}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Summary info & Optional Size-Breakdown Toggle */}
+                            <div className="text-xs text-slate-800 flex items-center justify-between flex-wrap gap-2">
+                              <span>Workforce Output: <strong className="text-black">{group.ordersCount}</strong> {group.ordersCount === 1 ? 'Order' : 'Orders'} (<strong className="text-black">{group.entryCount}</strong> logs)</span>
+
+                              {hasSizes && (
+                                <button
+                                  type="button"
+                                  onClick={() => toggleExpandSizeGroup(group.key)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 text-[11px] font-bold transition shadow-xs"
+                                >
+                                  <TrendingUp className="h-3 w-3" />
+                                  <span>{isSizeExpanded ? 'Hide Size Breakdown' : 'View Size-Wise Breakdown'}</span>
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Aggregated Sizes Breakdown Pill Tags (Shown ONLY on Demand when button clicked) */}
+                            {hasSizes && isSizeExpanded && (
+                              <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5 animate-fadeIn">
+                                <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">
+                                  Daily Size Breakdown ({group.department}):
+                                </div>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {Object.entries(group.sizeBreakdown).map(([sz, qty]) => (
+                                    <span
+                                      key={sz}
+                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-white border border-slate-200 text-slate-900 shadow-xs"
+                                    >
+                                      <span className="text-slate-600">{sz}#:</span>
+                                      <strong className="text-black font-black">{qty.toLocaleString()}</strong>
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Expand/Collapse Contributing Orders Drawer */}
+                          <div className="pt-2 border-t border-[var(--ec-border)]">
+                            <button
+                              type="button"
+                              onClick={() => toggleExpandGroup(group.key)}
+                              className="text-xs font-bold text-blue-700 hover:underline flex items-center gap-1"
+                            >
+                              {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                              <span>{isExpanded ? 'Hide Contributing Orders' : `View Contributing Orders (${group.flows.length})`}</span>
+                            </button>
+
+                            {isExpanded && (
+                              <div className="mt-2.5 space-y-2 pl-2 border-l-2 border-blue-500/40 animate-fadeIn">
+                                {group.flows.map((f) => {
+                                  const matchedOrder = uniqueOrders.find((o) => o.id === f.orderId);
+                                  const { time } = formatDateTime(f.updatedAt);
+                                  const unit = matchedOrder?.unit || defaultProductionUnit;
+                                  const hasEntrySizes = f.sizeBreakdown && Object.keys(f.sizeBreakdown).length > 0;
+
+                                  return (
+                                    <div
+                                      key={f.id}
+                                      onClick={() => setSelectedFlowDetail(f)}
+                                      className="p-3 rounded-xl bg-slate-50 hover:bg-white border border-slate-200 hover:border-blue-300 shadow-xs cursor-pointer transition space-y-1.5 group"
+                                      title="Click to view full entry details"
+                                    >
+                                      <div className="flex items-center justify-between gap-3 text-xs">
+                                        <div className="min-w-0 flex items-center gap-2 flex-wrap">
+                                          <span className="font-mono font-black text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200 shadow-2xs">
+                                            #{matchedOrder?.orderNumber || f.orderId}
+                                          </span>
+                                          <span className="font-bold text-black truncate max-w-[150px]">
+                                            {f.articleName || 'Standard'}
+                                          </span>
+                                          {f.color && <span className="text-[11px] text-slate-700 font-medium">({f.color})</span>}
+                                          
+                                          {/* Process / Stage Tag */}
+                                          {f.processName && (
+                                            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
+                                              <span>⚙️ {f.processName}</span>
+                                            </span>
+                                          )}
+
+                                          {time && <span className="text-[10px] text-slate-600 font-mono">• {time}</span>}
+                                        </div>
+
+                                        <div className="flex items-center gap-2 flex-shrink-0">
+                                          <span className="font-black text-emerald-700 text-xs bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-200">
+                                            +{f.completed} {unit}
+                                          </span>
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleDeleteFlow(f);
+                                            }}
+                                            className="p-1 rounded-lg bg-red-50 hover:bg-red-500 text-red-600 hover:text-white border border-red-200 transition"
+                                            title="Delete entry"
+                                          >
+                                            <Trash2 className="h-3 w-3" />
+                                          </button>
+                                        </div>
+                                      </div>
+
+                                      {/* Entry Size Breakdown (if logged with sizes) */}
+                                      {hasEntrySizes && (
+                                        <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-slate-100">
+                                          <span className="text-[10px] font-bold text-slate-600">Sizes in log:</span>
+                                          {Object.entries(f.sizeBreakdown!).map(([sz, qty]) => {
+                                            const num = Number(qty) || 0;
+                                            if (num <= 0) return null;
+                                            return (
+                                              <span key={sz} className="text-[10px] font-bold bg-white border border-slate-200 px-1.5 py-0.2 rounded text-slate-800 shadow-2xs">
+                                                {sz}#: <strong className="text-black font-black">{num}</strong>
+                                              </span>
+                                            );
+                                          })}
+                                        </div>
+                                      )}
+
+                                      {f.notes && (
+                                        <p className="text-[10px] text-slate-600 italic truncate">
+                                          "{f.notes}"
+                                        </p>
+                                      )}
+
+                                      <div className="flex items-center justify-between pt-0.5 text-[10px] text-blue-700 font-bold group-hover:underline">
+                                        <span>Click entry to view full log details →</span>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Section Daily Rollup Footer Summary */}
+                  <div className="p-4 rounded-2xl border border-[var(--ec-border)] bg-[var(--ec-card)] flex flex-col sm:flex-row items-center justify-between gap-3 text-xs shadow-xs">
+                    <div className="flex items-center gap-2">
+                      <Factory className="h-4 w-4 text-cyan-400" />
+                      <span className="font-bold text-[var(--ec-foreground)]">
+                        Total Output in Selected Range & Sections: <strong className="text-emerald-400 text-sm">+{totalProductionStats.totalQty.toLocaleString()} {defaultProductionUnit}</strong>
+                      </span>
+                    </div>
+                    <span className="text-[11px] font-bold text-slate-500">
+                      {dailySectionGroups.length} Section-Day Rollup(s)
+                    </span>
+                  </div>
+                </div>
               ) : (
                 <>
                   {/* MOBILE VIEW: Touch-Friendly Card List (Shown on screens < 768px) */}
@@ -1136,14 +1457,19 @@ export function ProductionPage() {
                           {/* Top Row: Order Badge, Department & Delete Button */}
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="font-mono font-black text-xs text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20">
-                                {matchedOrder?.orderNumber || f.orderId}
-                              </span>
-                              <span className="px-2 py-0.5 rounded-md font-extrabold text-[11px] bg-cyan-500/15 text-cyan-400 border border-cyan-500/25">
+                              <button
+                                type="button"
+                                onClick={() => navigateToOrder(f.orderId, matchedOrder?.orderNumber)}
+                                className="font-mono font-black text-xs text-blue-700 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded border border-blue-200 shadow-2xs hover:underline transition"
+                                title="Click to view order details and production balance in Orders page"
+                              >
+                                #{matchedOrder?.orderNumber || f.orderId}
+                              </button>
+                              <span className="px-2 py-0.5 rounded-md font-extrabold text-[11px] bg-blue-50 text-blue-700 border border-blue-200">
                                 {f.department}
                               </span>
                               {f.processName && (
-                                <span className="px-2 py-0.5 rounded-md font-bold text-[10px] bg-purple-500/15 text-purple-300 border border-purple-500/25">
+                                <span className="px-2 py-0.5 rounded-md font-bold text-[10px] bg-purple-50 text-purple-700 border border-purple-200">
                                   ⚙️ {f.processName}
                                 </span>
                               )}
@@ -1153,7 +1479,7 @@ export function ProductionPage() {
                             <button
                               type="button"
                               onClick={() => handleDeleteFlow(f)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-red-500/15 hover:bg-red-500 text-red-400 hover:text-white border border-red-500/30 text-[11px] font-black transition active:scale-95 flex-shrink-0"
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-red-50 hover:bg-red-600 text-red-600 hover:text-white border border-red-200 text-[11px] font-black transition active:scale-95 flex-shrink-0"
                               title="Delete this entry"
                             >
                               <Trash2 className="h-3 w-3" />
@@ -1164,25 +1490,40 @@ export function ProductionPage() {
                           {/* Middle Row: Item Name, Buyer, and Output Display */}
                           <div className="flex items-center justify-between gap-2 border-y border-[var(--ec-border)]/50 py-2">
                             <div className="min-w-0 flex-1">
-                              <p className="font-bold text-xs text-[var(--ec-foreground)] truncate">
+                              <button
+                                type="button"
+                                onClick={() => navigateToOrder(f.orderId, matchedOrder?.orderNumber)}
+                                className="font-bold text-xs text-black hover:text-blue-700 text-left truncate block max-w-full"
+                              >
                                 {f.articleName || 'Standard Item'}
-                              </p>
-                              <p className="text-[10px] text-[var(--ec-muted)] truncate mt-0.5">
-                                Buyer: <strong className="text-[var(--ec-foreground)]">{matchedOrder?.buyerName || 'Unknown'}</strong> {f.color ? `• Color: ${f.color}` : ''}
+                              </button>
+                              <p className="text-[10px] text-slate-600 truncate mt-0.5">
+                                Buyer: <strong className="text-black">{matchedOrder?.buyerName || 'Unknown'}</strong> {f.color ? `• Color: ${f.color}` : ''}
                               </p>
                             </div>
 
                             {/* Total Badge */}
                             <div className="flex-shrink-0">
-                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/25">
-                                <span className="font-black text-xs text-emerald-400">
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200">
+                                <span className="font-black text-xs text-emerald-700">
                                   +{f.completed.toLocaleString()}
                                 </span>
-                                <span className="text-[10px] text-emerald-300 font-bold">
+                                <span className="text-[10px] text-emerald-700 font-bold">
                                   {unit}
                                 </span>
                               </span>
                             </div>
+                          </div>
+
+                          {/* Quick Order Balance Link */}
+                          <div className="flex items-center justify-between pt-1">
+                            <button
+                              type="button"
+                              onClick={() => navigateToOrder(f.orderId, matchedOrder?.orderNumber)}
+                              className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-700 hover:text-blue-900 bg-blue-50/80 hover:bg-blue-100 px-2 py-0.5 rounded-lg border border-blue-200 transition"
+                            >
+                              <span>📦 View Order & Article Balance Due →</span>
+                            </button>
                           </div>
 
                           {/* Size-Wise Breakdown Box (Shown when 'Show Size Wise Production' is selected) */}
@@ -1318,10 +1659,15 @@ export function ProductionPage() {
                               {/* Order Number & Buyer */}
                               <td className="py-3 px-3 whitespace-nowrap">
                                 <div>
-                                  <span className="font-mono font-extrabold text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20">
-                                    {matchedOrder?.orderNumber || f.orderId}
-                                  </span>
-                                  <p className="text-[11px] text-[var(--ec-muted)] mt-1 truncate max-w-[140px]">
+                                  <button
+                                    type="button"
+                                    onClick={() => navigateToOrder(f.orderId, matchedOrder?.orderNumber)}
+                                    className="font-mono font-black text-xs text-blue-700 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded border border-blue-200 shadow-2xs hover:underline transition"
+                                    title="Click to view order and production balance in Orders page"
+                                  >
+                                    #{matchedOrder?.orderNumber || f.orderId}
+                                  </button>
+                                  <p className="text-[11px] text-slate-600 mt-1 truncate max-w-[140px]">
                                     {matchedOrder?.buyerName || 'Unknown Buyer'}
                                   </p>
                                 </div>
@@ -1329,12 +1675,17 @@ export function ProductionPage() {
 
                               {/* Article & Color */}
                               <td className="py-3 px-3">
-                                <div className="font-bold text-[var(--ec-foreground)]">
+                                <button
+                                  type="button"
+                                  onClick={() => navigateToOrder(f.orderId, matchedOrder?.orderNumber)}
+                                  className="font-bold text-black hover:text-blue-700 text-left transition block"
+                                  title="Click to view order in Orders page"
+                                >
                                   {f.articleName || 'Standard Item'}
-                                </div>
+                                </button>
                                 {f.color && (
-                                  <div className="text-[11px] text-[var(--ec-muted)] mt-0.5">
-                                    Color: <strong className="text-[var(--ec-foreground)]">{f.color}</strong>
+                                  <div className="text-[11px] text-slate-600 mt-0.5">
+                                    Color: <strong className="text-black">{f.color}</strong>
                                   </div>
                                 )}
                               </td>
@@ -1715,7 +2066,7 @@ export function ProductionPage() {
                       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
                         {currentDeptProcesses.map((proc) => {
                           const isSelected = selectedProcess === proc;
-                          const { completed, target, isComplete } = getProcessProgress(proc);
+                          const { completed, target, isComplete, bySize } = getProcessProgress(proc);
                           const pct = target > 0 ? Math.min(100, Math.round((completed / target) * 100)) : 0;
 
                           return (
@@ -1804,6 +2155,24 @@ export function ProductionPage() {
                                   {pct}%
                                 </span>
                               </div>
+
+                              {/* Size-wise output pills for this process/stage */}
+                              {bySize && Object.keys(bySize).length > 0 && (
+                                <div className="flex flex-wrap gap-1 pt-1.5 border-t border-[var(--ec-border)]/40">
+                                  {Object.entries(bySize).map(([sz, qty]) => (
+                                    <span
+                                      key={sz}
+                                      className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                                        isSelected
+                                          ? 'bg-white/20 text-white'
+                                          : 'bg-[var(--ec-surface)] text-[var(--ec-foreground)] border border-[var(--ec-border)]'
+                                      }`}
+                                    >
+                                      {sz}#: {qty}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           );
                         })}
@@ -1821,73 +2190,73 @@ export function ProductionPage() {
                       </label>
                       <a
                         href="/planning"
-                        className="text-[11px] font-bold text-cyan-400 hover:text-cyan-300 transition flex items-center gap-1"
+                        className="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:underline transition flex items-center gap-1"
                       >
                         <Sliders className="h-3 w-3" />
                         <span>Adjust Plan in Planning</span>
                       </a>
                     </div>
 
-                    <div className="p-3.5 rounded-2xl bg-gradient-to-br from-slate-900/90 via-[var(--ec-surface)] to-slate-900/90 border border-cyan-500/30 space-y-3 shadow-sm">
+                    <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-[var(--ec-border)] space-y-3 shadow-xs">
                       {/* Metric Chips: Daily, Weekly, Total Target Fill */}
-                      <div className="grid grid-cols-3 gap-2 text-center">
+                      <div className="grid grid-cols-3 gap-2.5 text-center">
                         {/* Daily Fill */}
-                        <div className="p-2.5 rounded-xl bg-[var(--ec-card)] border border-[var(--ec-border)]/70 space-y-1">
-                          <span className="text-[10px] font-bold text-[var(--ec-muted)] uppercase tracking-wider">Today's Target</span>
-                          <p className="text-xs sm:text-sm font-black text-cyan-400">
-                            {currentDeptPlanTarget.todayOutput} <span className="text-[10px] font-normal text-[var(--ec-muted)]">/ {currentDeptPlanTarget.dailyTarget}</span>
+                        <div className="p-3 rounded-xl bg-[var(--ec-card)] border border-[var(--ec-border)] space-y-1">
+                          <span className="text-[10px] font-semibold text-[var(--ec-muted)] uppercase tracking-wider">Today's Target</span>
+                          <p className="text-sm sm:text-base font-bold text-[var(--ec-foreground)]">
+                            {currentDeptPlanTarget.todayOutput} <span className="text-[11px] font-normal text-[var(--ec-muted)]">/ {currentDeptPlanTarget.dailyTarget}</span>
                           </p>
-                          <div className="w-full bg-[var(--ec-surface)] h-1.5 rounded-full overflow-hidden">
-                            <div className="bg-cyan-400 h-full rounded-full" style={{ width: `${currentDeptPlanTarget.dailyPct}%` }} />
+                          <div className="w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden">
+                            <div className="bg-blue-600 dark:bg-blue-500 h-full rounded-full" style={{ width: `${currentDeptPlanTarget.dailyPct}%` }} />
                           </div>
-                          <span className="text-[9px] font-black text-cyan-300 block">{currentDeptPlanTarget.dailyPct}% Filled</span>
+                          <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-300 block">{currentDeptPlanTarget.dailyPct}% Filled</span>
                         </div>
 
                         {/* Weekly Fill */}
-                        <div className="p-2.5 rounded-xl bg-[var(--ec-card)] border border-[var(--ec-border)]/70 space-y-1">
-                          <span className="text-[10px] font-bold text-[var(--ec-muted)] uppercase tracking-wider">Week's Target</span>
-                          <p className="text-xs sm:text-sm font-black text-blue-400">
-                            {currentDeptPlanTarget.weekOutput} <span className="text-[10px] font-normal text-[var(--ec-muted)]">/ {currentDeptPlanTarget.weeklyTarget}</span>
+                        <div className="p-3 rounded-xl bg-[var(--ec-card)] border border-[var(--ec-border)] space-y-1">
+                          <span className="text-[10px] font-semibold text-[var(--ec-muted)] uppercase tracking-wider">Week's Target</span>
+                          <p className="text-sm sm:text-base font-bold text-[var(--ec-foreground)]">
+                            {currentDeptPlanTarget.weekOutput} <span className="text-[11px] font-normal text-[var(--ec-muted)]">/ {currentDeptPlanTarget.weeklyTarget}</span>
                           </p>
-                          <div className="w-full bg-[var(--ec-surface)] h-1.5 rounded-full overflow-hidden">
-                            <div className="bg-blue-400 h-full rounded-full" style={{ width: `${currentDeptPlanTarget.weeklyPct}%` }} />
+                          <div className="w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden">
+                            <div className="bg-blue-600 dark:bg-blue-500 h-full rounded-full" style={{ width: `${currentDeptPlanTarget.weeklyPct}%` }} />
                           </div>
-                          <span className="text-[9px] font-black text-blue-300 block">{currentDeptPlanTarget.weeklyPct}% Filled</span>
+                          <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-300 block">{currentDeptPlanTarget.weeklyPct}% Filled</span>
                         </div>
 
                         {/* Total Order Target & Remaining Due */}
-                        <div className="p-2.5 rounded-xl bg-[var(--ec-card)] border border-[var(--ec-border)]/70 space-y-1">
-                          <span className="text-[10px] font-bold text-[var(--ec-muted)] uppercase tracking-wider">Total Order</span>
-                          <p className="text-xs sm:text-sm font-black text-emerald-400">
-                            {currentDeptPlanTarget.totalOutput} <span className="text-[10px] font-normal text-[var(--ec-muted)]">/ {currentDeptPlanTarget.totalTarget}</span>
+                        <div className="p-3 rounded-xl bg-[var(--ec-card)] border border-[var(--ec-border)] space-y-1">
+                          <span className="text-[10px] font-semibold text-[var(--ec-muted)] uppercase tracking-wider">Total Order</span>
+                          <p className="text-sm sm:text-base font-bold text-[var(--ec-foreground)]">
+                            {currentDeptPlanTarget.totalOutput} <span className="text-[11px] font-normal text-[var(--ec-muted)]">/ {currentDeptPlanTarget.totalTarget}</span>
                           </p>
-                          <div className="w-full bg-[var(--ec-surface)] h-1.5 rounded-full overflow-hidden">
-                            <div className="bg-emerald-400 h-full rounded-full" style={{ width: `${currentDeptPlanTarget.totalPct}%` }} />
+                          <div className="w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden">
+                            <div className="bg-emerald-600 dark:bg-emerald-500 h-full rounded-full" style={{ width: `${currentDeptPlanTarget.totalPct}%` }} />
                           </div>
-                          <span className="text-[9px] font-black text-emerald-300 block">{currentDeptPlanTarget.totalPct}% Filled</span>
+                          <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-300 block">{currentDeptPlanTarget.totalPct}% Filled</span>
                         </div>
                       </div>
 
                       {/* DUE / SHORTFALL ADJUSTMENT FOOTER */}
-                      <div className="flex items-center justify-between p-2.5 rounded-xl bg-gradient-to-r from-rose-500/10 via-amber-500/10 to-transparent border border-rose-500/20 text-xs">
+                      <div className="flex items-center justify-between p-3 rounded-xl bg-rose-50/60 dark:bg-rose-950/20 border border-rose-200/80 dark:border-rose-900/50 text-xs">
                         <div className="flex items-center gap-2">
-                          <AlertTriangle className={`h-4 w-4 ${currentDeptPlanTarget.todayDue > 0 ? 'text-amber-400 animate-bounce' : 'text-emerald-400'}`} />
+                          <AlertTriangle className={`h-4 w-4 ${currentDeptPlanTarget.todayDue > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`} />
                           <div>
                             <span className="font-bold text-[var(--ec-foreground)]">
                               {currentDeptPlanTarget.todayDue > 0 ? `Today's Remaining Due: ${currentDeptPlanTarget.todayDue} ${selectedOrder?.unit || defaultProductionUnit}` : `Today's Daily Target Completed!`}
                             </span>
-                            <p className="text-[10px] text-[var(--ec-muted)]">
-                              Total Order Remaining Due: <strong className="text-rose-400">{currentDeptPlanTarget.totalDue}</strong> {selectedOrder?.unit || defaultProductionUnit}
+                            <p className="text-[11px] text-[var(--ec-muted)]">
+                              Total Order Remaining Due: <strong className="text-rose-700 dark:text-rose-400 font-bold">{currentDeptPlanTarget.totalDue}</strong> {selectedOrder?.unit || defaultProductionUnit}
                             </p>
                           </div>
                         </div>
 
-                        <span className={`text-[10px] font-black px-2 py-0.5 rounded-md ${
+                        <span className={`text-[10px] font-bold px-2.5 py-1 rounded-md border ${
                           currentDeptPlanTarget.totalDue === 0
-                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800'
                             : currentDeptPlanTarget.todayDue === 0
-                            ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
-                            : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                            ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-800'
+                            : 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-800'
                         }`}>
                           {currentDeptPlanTarget.totalDue === 0 ? '✓ Order 100% Done' : currentDeptPlanTarget.todayDue === 0 ? '✓ Day Target Met' : '⚠️ Due Pending'}
                         </span>
@@ -2261,28 +2630,12 @@ export function ProductionPage() {
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-[var(--ec-border)]/60">
                         {depts.map((d) => {
                           const isMulti = isMultiProcessDept(d);
-                          let total = 0;
-                          let stagesText = '';
-
-                          if (isMulti) {
-                            const dFlows = orderFlows.filter((f) => f.department === d);
-                            const key = d.toLowerCase().trim();
-                            const configuredStages = customProcesses[key] || [];
-                            const recordedProcesses = Array.from(new Set(dFlows.map((f) => f.processName).filter(Boolean))) as string[];
-                            const allStages = Array.from(new Set([...configuredStages, ...recordedProcesses]));
-
-                            if (allStages.length > 0) {
-                              const processTotals = allStages.map((proc) =>
-                                dFlows.filter((f) => f.processName === proc).reduce((s, f) => s + f.completed, 0)
-                              );
-                              total = Math.min(...processTotals);
-                              stagesText = `(${allStages.length} stages)`;
-                            } else {
-                              total = dFlows.reduce((s, f) => s + f.completed, 0);
-                            }
-                          } else {
-                            total = orderFlows.filter((f) => f.department === d).reduce((s, f) => s + f.completed, 0);
-                          }
+                          const dFlows = orderFlows.filter((f) => f.department === d);
+                          const key = d.toLowerCase().trim();
+                          const configuredStages = customProcesses[key] || [];
+                          const res = calculateMultiProcessProduction(dFlows, d, configuredStages);
+                          const total = res.totalCompleted;
+                          const stagesText = isMulti && res.processCounts > 1 ? `(${res.processCounts} stages)` : '';
 
                           const orderPlan = plans.find((p) => p.orderId === order.id || p.orderNumber === order.orderNumber);
                           const sPlan = orderPlan?.sections?.[d];
@@ -2520,6 +2873,158 @@ export function ProductionPage() {
           </div>
         </div>
       )}
+      {/* Production Entry Inspection Modal */}
+      {selectedFlowDetail && (() => {
+        const matchedOrder = uniqueOrders.find((o) => o.id === selectedFlowDetail.orderId);
+        const { date, time } = formatDateTime(selectedFlowDetail.updatedAt);
+        const unit = matchedOrder?.unit || defaultProductionUnit;
+        const hasSizes = selectedFlowDetail.sizeBreakdown && Object.keys(selectedFlowDetail.sizeBreakdown).length > 0;
+
+        return (
+          <div
+            onClick={() => setSelectedFlowDetail(null)}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-fadeIn"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="relative max-w-lg w-full bg-white border border-slate-200 rounded-3xl overflow-hidden shadow-2xl p-5 sm:p-6 space-y-4 animate-scaleUp text-black"
+            >
+              {/* Modal Header */}
+              <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-xl bg-blue-50 text-blue-700 border border-blue-200">
+                    <Factory className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-base text-black">Production Log Details</h3>
+                    <p className="text-xs text-slate-600">Full inspection of this recorded production entry</p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedFlowDetail(null)}
+                  className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 hover:text-black text-sm font-bold transition flex items-center justify-center"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Summary Highlight Box */}
+              <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono font-black text-xs text-blue-700 bg-blue-100 px-2.5 py-1 rounded-lg border border-blue-200">
+                      #{matchedOrder?.orderNumber || selectedFlowDetail.orderId}
+                    </span>
+                    <span className="font-bold text-sm text-black">
+                      {selectedFlowDetail.articleName || matchedOrder?.articleName || 'Standard Article'}
+                    </span>
+                    {selectedFlowDetail.color && (
+                      <span className="text-xs font-semibold text-slate-700">({selectedFlowDetail.color})</span>
+                    )}
+                  </div>
+
+                  <span className="inline-flex items-center gap-1 px-3 py-1 rounded-xl bg-emerald-100 border border-emerald-300 text-emerald-800 font-black text-base">
+                    +{selectedFlowDetail.completed} {unit}
+                  </span>
+                </div>
+
+                {/* Grid Metadata */}
+                <div className="grid grid-cols-2 gap-2.5 text-xs pt-1 border-t border-slate-200">
+                  <div>
+                    <span className="text-[11px] font-bold text-slate-600 uppercase block">Department:</span>
+                    <span className="font-black text-black text-sm">{selectedFlowDetail.department}</span>
+                  </div>
+
+                  {selectedFlowDetail.processName && (
+                    <div>
+                      <span className="text-[11px] font-bold text-slate-600 uppercase block">Process Stage:</span>
+                      <span className="font-black text-purple-800 text-sm">⚙️ {selectedFlowDetail.processName}</span>
+                    </div>
+                  )}
+
+                  <div>
+                    <span className="text-[11px] font-bold text-slate-600 uppercase block">Date Recorded:</span>
+                    <span className="font-bold text-black">{date}</span>
+                  </div>
+
+                  <div>
+                    <span className="text-[11px] font-bold text-slate-600 uppercase block">Time:</span>
+                    <span className="font-bold text-black font-mono">{time || 'N/A'}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Size-Wise Breakdown */}
+              {hasSizes && (
+                <div className="p-3.5 rounded-2xl bg-white border border-slate-200 space-y-2">
+                  <span className="text-xs font-black text-blue-800 uppercase tracking-wider block">
+                    Recorded Size Breakdown:
+                  </span>
+                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                    {Object.entries(selectedFlowDetail.sizeBreakdown!).map(([sz, qty]) => {
+                      const num = Number(qty) || 0;
+                      if (num <= 0) return null;
+                      return (
+                        <div key={sz} className="p-2 rounded-xl bg-slate-50 border border-slate-200 text-center">
+                          <span className="text-[11px] font-bold text-slate-600 block">Size {sz}#</span>
+                          <span className="text-sm font-black text-black">{num} {unit}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Operator Notes */}
+              {selectedFlowDetail.notes && (
+                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+                  <span className="text-[11px] font-bold text-slate-600 uppercase block mb-0.5">Notes:</span>
+                  <p className="text-black italic">"{selectedFlowDetail.notes}"</p>
+                </div>
+              )}
+
+              {/* Modal Footer Actions */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pt-2 border-t border-slate-200">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await handleDeleteFlow(selectedFlowDetail);
+                    setSelectedFlowDetail(null);
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-red-50 hover:bg-red-600 text-red-700 hover:text-white border border-red-200 text-xs font-bold transition flex items-center justify-center gap-1.5"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  <span>Delete This Log</span>
+                </button>
+
+                <div className="flex items-center gap-2 justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const o = matchedOrder;
+                      setSelectedFlowDetail(null);
+                      navigateToOrder(selectedFlowDetail.orderId, o?.orderNumber);
+                    }}
+                    className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition shadow-xs flex items-center gap-1.5"
+                  >
+                    <span>📦 Open Orders Page (View Balance) →</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelectedFlowDetail(null)}
+                    className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold transition border border-slate-200"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

@@ -13,30 +13,8 @@ import type {
 import { firebaseService } from './firebaseService';
 import { mockRepository } from '@/repositories/mockRepository';
 
-async function fetchJson<T>(url: string, init?: RequestInit, fallback?: T): Promise<T> {
-  try {
-    const response = await fetch(url, {
-      ...init,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(init?.headers ?? {}),
-      },
-      cache: 'no-store',
-    });
-
-    if (!response.ok) {
-      if (fallback !== undefined) return fallback;
-    }
-
-    return await response.json();
-  } catch (err) {
-    if (fallback !== undefined) return fallback;
-    throw err;
-  }
-}
-
 export const apiService = {
-  // Buyers
+  // ── Buyers ──────────────────────────────────────────────────────────────────
   getBuyers: async (): Promise<Buyer[]> => {
     try {
       const fbData = await firebaseService.getBuyers();
@@ -44,60 +22,50 @@ export const apiService = {
         mockRepository.setBuyers(fbData);
         return fbData;
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn('Firestore getBuyers fallback to local:', e);
+    }
     return mockRepository.getBuyers();
   },
+
   createBuyer: async (payload: Omit<Buyer, 'id'>) => {
     const id = `b_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const fullBuyer: Buyer = { id, createdAt: new Date().toISOString(), ...payload } as Buyer;
     
-    // Save to local persistent repository
     mockRepository.addBuyer(fullBuyer);
 
-    // Save to Firebase Firestore cloud database
     try {
       await firebaseService.saveBuyer(fullBuyer);
     } catch (e) {
-      console.warn('Firebase buyer save warning:', e);
+      console.warn('Firebase buyer save error:', e);
     }
-
-    // Sync with MongoDB API
-    try {
-      await fetchJson<Buyer>('/api/buyers', { method: 'POST', body: JSON.stringify(fullBuyer) }, fullBuyer);
-    } catch (e) {}
 
     return fullBuyer;
   },
+
   deleteBuyer: async (id: string) => {
-    // Delete from LocalStorage
     mockRepository.deleteBuyer(id);
 
-    // Delete from Firebase Firestore
     try {
       await firebaseService.deleteBuyer(id);
     } catch (e) {
-      console.warn('Firebase buyer delete warning:', e);
+      console.warn('Firebase buyer delete error:', e);
     }
-
-    // Delete from MongoDB
-    try {
-      await fetchJson<{ success: boolean }>('/api/buyers', { method: 'DELETE', body: JSON.stringify({ id }) }, { success: true });
-    } catch (e) {}
 
     return { success: true };
   },
+
   patchBuyer: async (id: string, updates: Partial<Buyer>) => {
     mockRepository.updateBuyer(id, updates);
     try {
       await firebaseService.updateBuyer(id, updates);
-    } catch (e) {}
-    try {
-      await fetchJson<Buyer>('/api/buyers', { method: 'PATCH', body: JSON.stringify({ id, updates }) }, { id, ...updates } as Buyer);
-    } catch (e) {}
+    } catch (e) {
+      console.warn('Firebase buyer update error:', e);
+    }
     return { id, ...updates } as Buyer;
   },
 
-  // Departments
+  // ── Departments ─────────────────────────────────────────────────────────────
   getDepartments: async (): Promise<Department[]> => {
     try {
       const fbData = await firebaseService.getDepartments();
@@ -108,18 +76,16 @@ export const apiService = {
     } catch (e) {}
     return mockRepository.getDepartments();
   },
+
   patchDepartment: async (id: string, updates: Partial<Department>) => {
     mockRepository.updateDepartment(id, updates);
     try {
       await firebaseService.updateDepartment(id, updates);
     } catch (e) {}
-    try {
-      await fetchJson<Department>('/api/departments', { method: 'PATCH', body: JSON.stringify({ id, updates }) }, { id, ...updates } as Department);
-    } catch (e) {}
     return { id, ...updates } as Department;
   },
 
-  // Articles
+  // ── Articles ────────────────────────────────────────────────────────────────
   getArticles: async (): Promise<Article[]> => {
     try {
       const fbData = await firebaseService.getArticles();
@@ -131,7 +97,7 @@ export const apiService = {
     return mockRepository.getArticles();
   },
 
-  // Orders
+  // ── Orders ──────────────────────────────────────────────────────────────────
   getBuyerOrders: async (): Promise<BuyerOrder[]> => {
     try {
       const fbData = await firebaseService.getOrders();
@@ -142,24 +108,18 @@ export const apiService = {
     } catch (e) {}
     return mockRepository.getBuyerOrders();
   },
+
   createBuyerOrder: async (payload: Omit<BuyerOrder, 'id'>) => {
     const id = `bo_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const fullOrder: BuyerOrder = { id, createdAt: new Date().toISOString(), status: 'Pending', ...payload } as BuyerOrder;
 
-    // Save to local persistent repository
     mockRepository.addBuyerOrder(fullOrder);
 
-    // Save to Firebase Firestore cloud database
     try {
       await firebaseService.saveOrder(fullOrder);
     } catch (e) {
-      console.warn('Firebase order save warning:', e);
+      console.warn('Firebase order save error:', e);
     }
-
-    // Sync with MongoDB API
-    try {
-      await fetchJson<BuyerOrder>('/api/orders', { method: 'POST', body: JSON.stringify(fullOrder) }, fullOrder);
-    } catch (e) {}
 
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('erp:buyerOrdersUpdated'));
@@ -167,14 +127,14 @@ export const apiService = {
 
     return fullOrder;
   },
+
   updateBuyerOrder: async (id: string, updates: Partial<BuyerOrder>) => {
     mockRepository.updateBuyerOrder(id, updates);
     try {
       await firebaseService.updateOrder(id, updates);
-    } catch (e) {}
-    try {
-      await fetchJson<BuyerOrder>('/api/orders', { method: 'PATCH', body: JSON.stringify({ id, updates }) }, { id, ...updates } as BuyerOrder);
-    } catch (e) {}
+    } catch (e) {
+      console.warn('Firebase order update error:', e);
+    }
 
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('erp:buyerOrdersUpdated'));
@@ -182,21 +142,15 @@ export const apiService = {
 
     return { id, ...updates } as BuyerOrder;
   },
+
   deleteBuyerOrder: async (id: string) => {
-    // Delete from LocalStorage
     mockRepository.deleteBuyerOrder(id);
 
-    // Delete from Firebase Firestore
     try {
       await firebaseService.deleteOrder(id);
     } catch (e) {
-      console.warn('Firebase order delete warning:', e);
+      console.warn('Firebase order delete error:', e);
     }
-
-    // Delete from MongoDB API
-    try {
-      await fetchJson<{ success: boolean }>('/api/orders', { method: 'DELETE', body: JSON.stringify({ id }) }, { success: true });
-    } catch (e) {}
 
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('erp:buyerOrdersUpdated'));
@@ -205,7 +159,7 @@ export const apiService = {
     return { success: true };
   },
 
-  // Production Orders & Flows
+  // ── Production Orders & Flows ───────────────────────────────────────────────
   getOrders: async (): Promise<Order[]> => {
     return mockRepository.getOrders();
   },
@@ -220,6 +174,7 @@ export const apiService = {
     } catch (e) {}
     return mockRepository.getProductionFlows();
   },
+
   createProductionFlow: async (payload: Omit<ProductionFlow, 'id'>) => {
     const id = `pf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const fullFlow: ProductionFlow = { id, updatedAt: new Date().toISOString(), ...payload } as ProductionFlow;
@@ -230,38 +185,31 @@ export const apiService = {
       await firebaseService.saveProductionFlow(fullFlow);
     } catch (e) {}
 
-    try {
-      await fetchJson<ProductionFlow>('/api/production-flows', { method: 'POST', body: JSON.stringify(fullFlow) }, fullFlow);
-    } catch (e) {}
-
     return fullFlow;
   },
+
   updateProductionFlow: async (id: string, updates: Partial<ProductionFlow>) => {
     mockRepository.updateProductionFlow(id, updates);
     try {
       await firebaseService.updateProductionFlow(id, updates);
     } catch (e) {}
-    try {
-      await fetchJson<ProductionFlow>('/api/production-flows', { method: 'PATCH', body: JSON.stringify({ id, updates }) }, { id, ...updates } as ProductionFlow);
-    } catch (e) {}
     return { id, ...updates } as ProductionFlow;
   },
+
   deleteProductionFlow: async (id: string) => {
     mockRepository.deleteProductionFlow(id);
     try {
       await firebaseService.deleteProductionFlow(id);
     } catch (e) {}
-    try {
-      await fetchJson<{ success: boolean }>('/api/production-flows', { method: 'DELETE', body: JSON.stringify({ id }) }, { success: true });
-    } catch (e) {}
     return { success: true };
   },
+
   clearProductionFlows: async () => {
     mockRepository.clearProductionFlows();
     return 0;
   },
 
-  // Finished Goods
+  // ── Finished Goods ──────────────────────────────────────────────────────────
   getFinishedGoods: async (): Promise<FinishedGoods[]> => {
     try {
       const fbData = await firebaseService.getFinishedGoods();
@@ -272,6 +220,7 @@ export const apiService = {
     } catch (e) {}
     return mockRepository.getFinishedGoods();
   },
+
   createFinishedGood: async (payload: Omit<FinishedGoods, 'id'>) => {
     const id = `fg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const fullFg: FinishedGoods = { id, ...payload } as FinishedGoods;
@@ -282,32 +231,25 @@ export const apiService = {
       await firebaseService.saveFinishedGood(fullFg);
     } catch (e) {}
 
-    try {
-      await fetchJson<FinishedGoods>('/api/finished-goods', { method: 'POST', body: JSON.stringify(fullFg) }, fullFg);
-    } catch (e) {}
-
     return fullFg;
   },
+
   updateFinishedGood: async (id: string, updates: Partial<FinishedGoods>) => {
     mockRepository.updateFinishedGood(id, updates);
     try {
       await firebaseService.updateFinishedGood(id, updates);
     } catch (e) {}
-    try {
-      await fetchJson<FinishedGoods>('/api/finished-goods', { method: 'PATCH', body: JSON.stringify({ id, updates }) }, { id, ...updates } as FinishedGoods);
-    } catch (e) {}
     return { id, ...updates } as FinishedGoods;
   },
+
   deleteFinishedGood: async (id: string) => {
     mockRepository.deleteFinishedGood(id);
     try {
       await firebaseService.deleteFinishedGood(id);
     } catch (e) {}
-    try {
-      await fetchJson<{ success: boolean }>('/api/finished-goods', { method: 'DELETE', body: JSON.stringify({ id }) }, { success: true });
-    } catch (e) {}
     return { success: true };
   },
+
   markFinishedGoodShipped: async (id: string) => {
     const finished = await apiService.updateFinishedGood(id, { status: 'Shipped' });
     if (finished?.orderId) {
@@ -316,7 +258,12 @@ export const apiService = {
     return { finished };
   },
 
-  // Warehouse Stocks
+  clearFinishedGoods: async () => {
+    mockRepository.clearFinishedGoods();
+    return 0;
+  },
+
+  // ── Warehouse Stocks ────────────────────────────────────────────────────────
   getWarehouseStocks: async (): Promise<WarehouseStock[]> => {
     try {
       const fbData = await firebaseService.getWarehouseStocks();
@@ -327,6 +274,7 @@ export const apiService = {
     } catch (e) {}
     return mockRepository.getWarehouseStocks();
   },
+
   createWarehouseStock: async (payload: Omit<WarehouseStock, 'id'>) => {
     const id = `ws_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const fullStock: WarehouseStock = { id, ...payload } as WarehouseStock;
@@ -337,34 +285,26 @@ export const apiService = {
       await firebaseService.saveWarehouseStock(fullStock);
     } catch (e) {}
 
-    try {
-      await fetchJson<WarehouseStock>('/api/warehouse-stocks', { method: 'POST', body: JSON.stringify(fullStock) }, fullStock);
-    } catch (e) {}
-
     return fullStock;
   },
+
   updateWarehouseStock: async (id: string, updates: Partial<WarehouseStock>) => {
     mockRepository.updateWarehouseStock(id, updates);
     try {
       await firebaseService.updateWarehouseStock(id, updates);
     } catch (e) {}
-    try {
-      await fetchJson<WarehouseStock>('/api/warehouse-stocks', { method: 'PATCH', body: JSON.stringify({ id, updates }) }, { id, ...updates } as WarehouseStock);
-    } catch (e) {}
     return { id, ...updates } as WarehouseStock;
   },
+
   deleteWarehouseStock: async (id: string) => {
     mockRepository.deleteWarehouseStock(id);
     try {
       await firebaseService.deleteWarehouseStock(id);
     } catch (e) {}
-    try {
-      await fetchJson<{ success: boolean }>('/api/warehouse-stocks', { method: 'DELETE', body: JSON.stringify({ id }) }, { success: true });
-    } catch (e) {}
     return { success: true };
   },
 
-  // Material Receivals
+  // ── Material Receivals ──────────────────────────────────────────────────────
   getMaterialReceivals: async (): Promise<MaterialReceival[]> => {
     try {
       const fbData = await firebaseService.getMaterialReceivals();
@@ -375,6 +315,7 @@ export const apiService = {
     } catch (e) {}
     return mockRepository.getMaterialReceivals();
   },
+
   createMaterialReceival: async (payload: Omit<MaterialReceival, 'id'>) => {
     const id = `mr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const fullReceival: MaterialReceival = { id, receivedAt: new Date().toISOString(), ...payload } as MaterialReceival;
@@ -385,27 +326,26 @@ export const apiService = {
       await firebaseService.saveMaterialReceival(fullReceival);
     } catch (e) {}
 
-    try {
-      await fetchJson<MaterialReceival>('/api/material-receivals', { method: 'POST', body: JSON.stringify(fullReceival) }, fullReceival);
-    } catch (e) {}
-
     return fullReceival;
   },
 
   transferWarehouseStock: async (payload: { itemId: string; fromSection: string; toSection: string; quantity: number }) => {
     try {
-      return await fetchJson<{ success: boolean }>('/api/warehouse-stocks/transfer', { method: 'POST', body: JSON.stringify(payload) }, { success: true });
+      const stock = mockRepository.getWarehouseStocks().find((s) => s.id === payload.itemId);
+      if (stock && stock.quantity >= payload.quantity) {
+        const remaining = stock.quantity - payload.quantity;
+        mockRepository.updateWarehouseStock(payload.itemId, { quantity: remaining });
+        try {
+          await firebaseService.updateWarehouseStock(payload.itemId, { quantity: remaining });
+        } catch (e) {}
+      }
+      return { success: true };
     } catch (e) {
       return { success: true };
     }
   },
 
-  clearFinishedGoods: async () => {
-    mockRepository.clearFinishedGoods();
-    return 0;
-  },
-
-  // Production Plans
+  // ── Production Plans ────────────────────────────────────────────────────────
   getProductionPlans: async (): Promise<OrderProductionPlan[]> => {
     try {
       const fbData = await firebaseService.getProductionPlans();

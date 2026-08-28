@@ -111,21 +111,21 @@ export default function BottomNav({
   };
 
   const navClass = (isActive: boolean) =>
-    `relative flex flex-col items-center justify-center py-1 px-2 rounded-xl transition-all duration-200 min-w-[52px] ${
+    `relative flex flex-col items-center justify-center py-1.5 px-2 rounded-xl transition-all duration-150 min-w-[52px] ${
       isActive
-        ? 'text-cyan-500 dark:text-cyan-400 font-bold bg-cyan-500/10 dark:bg-cyan-500/15 shadow-sm'
-        : 'text-[var(--ec-muted)] hover:text-[var(--ec-foreground)] active:scale-95'
+        ? 'text-blue-700 font-bold bg-blue-50 border border-blue-200 shadow-xs'
+        : 'text-slate-700 hover:text-black active:scale-95 font-medium'
     }`;
 
   return (
-    <nav className="mobile-nav lg:hidden z-30 shadow-xl border-t border-[var(--ec-border)]">
+    <nav className="mobile-nav lg:hidden z-30 shadow-sm border-t border-[var(--ec-border)] bg-white/95 backdrop-blur-md">
       {visibleItems.map((item) => {
         const Icon = iconMap[item.href] ?? Home;
         const isActive = pathname === item.href;
         return (
-          <Link key={item.key} href={item.href} className={navClass(isActive)}>
-            <Icon className={`h-4 w-4 mb-0.5 transition-transform ${isActive ? 'scale-110' : ''}`} />
-            <span className="text-[10px] truncate max-w-[62px] leading-tight">{item.label}</span>
+          <Link key={item.key} href={item.href} prefetch={true} className={navClass(isActive)}>
+            <Icon className={`h-4 w-4 mb-0.5 transition-transform ${isActive ? 'scale-105 text-blue-700' : 'text-slate-700'}`} />
+            <span className="text-[10px] truncate max-w-[62px] leading-tight text-slate-900 font-semibold">{item.label}</span>
           </Link>
         );
       })}
@@ -134,12 +134,12 @@ export default function BottomNav({
         <button
           type="button"
           onClick={onOpenProfile}
-          className="relative flex flex-col items-center justify-center py-1 px-2 rounded-xl text-[var(--ec-muted)] hover:text-cyan-400 active:scale-95 transition-all min-w-[50px]"
+          className="relative flex flex-col items-center justify-center py-1.5 px-2 rounded-xl text-slate-700 hover:text-black active:scale-95 transition-all min-w-[50px] font-medium"
         >
-          <div className="h-4 w-4 rounded-full bg-gradient-to-tr from-cyan-500 to-blue-500 text-[9px] font-bold text-white flex items-center justify-center mb-0.5 shadow-sm">
+          <div className="h-4 w-4 rounded-full bg-slate-900 text-white text-[9px] font-bold flex items-center justify-center mb-0.5">
             {user?.name?.charAt(0) || 'U'}
           </div>
-          <span className="text-[10px] leading-tight">Profile</span>
+          <span className="text-[10px] leading-tight text-slate-900 font-semibold">Profile</span>
         </button>
       )}
 
@@ -147,20 +147,20 @@ export default function BottomNav({
         <button
           type="button"
           onClick={onOpenCustomizer}
-          className="relative flex flex-col items-center justify-center py-1 px-2 rounded-xl text-[var(--ec-muted)] hover:text-cyan-400 active:scale-95 transition-all min-w-[50px]"
+          className="relative flex flex-col items-center justify-center py-1.5 px-2 rounded-xl text-slate-700 hover:text-black active:scale-95 transition-all min-w-[50px] font-medium"
         >
-          <Settings2 className="h-4 w-4 mb-0.5" />
-          <span className="text-[10px] leading-tight">Menu</span>
+          <Settings2 className="h-4 w-4 mb-0.5 text-slate-700" />
+          <span className="text-[10px] leading-tight text-slate-900 font-semibold">Menu</span>
         </button>
       )}
 
       <button
         type="button"
         onClick={logout}
-        className="relative flex flex-col items-center justify-center py-1 px-2 rounded-xl text-[var(--ec-muted)] hover:text-red-400 active:scale-95 transition-all min-w-[50px]"
+        className="relative flex flex-col items-center justify-center py-1.5 px-2 rounded-xl text-slate-700 hover:text-rose-700 active:scale-95 transition-all min-w-[50px] font-medium"
       >
-        <LogOut className="h-4 w-4 mb-0.5" />
-        <span className="text-[10px] leading-tight">Exit</span>
+        <LogOut className="h-4 w-4 mb-0.5 text-slate-700" />
+        <span className="text-[10px] leading-tight text-slate-900 font-semibold">Exit</span>
       </button>
     </nav>
   );

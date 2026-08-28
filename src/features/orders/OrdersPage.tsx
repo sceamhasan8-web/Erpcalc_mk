@@ -1,44 +1,26 @@
 "use client";
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { apiService } from '@/services/apiService';
 import { firebaseService } from '@/services/firebaseService';
+import { mockRepository } from '@/repositories/mockRepository';
+import { erpService } from '@/services/erpService';
 import { useModal } from '@/context/ModalContext';
 import { useProductionUnit, getProductionUnit, DEFAULT_PRODUCTION_UNITS } from '@/lib/unitSettings';
+import { calculateMultiProcessProduction } from '@/lib/productionUtils';
 import type { Article, Buyer, BuyerOrder, ProductionFlow } from '@/types';
 
 export function OrdersPage() {
   const router = useRouter();
   const { showAlert, showConfirm, toast } = useModal();
-  const [buyers, setBuyers] = useState<Buyer[]>([]);
-  const [articles, setArticles] = useState<Article[]>([]);
-  const [departments, setDepartments] = useState<string[]>([]);
-  const [productionFlows, setProductionFlows] = useState<ProductionFlow[]>([]);
-  const [buyerOrders, setBuyerOrders] = useState<BuyerOrder[]>([]);
+  const [buyers, setBuyers] = useState<Buyer[]>(() => mockRepository.getBuyers());
+  const [articles, setArticles] = useState<Article[]>(() => mockRepository.getArticles());
+  const [departments, setDepartments] = useState<string[]>(() => erpService.getDepartments().filter((d) => d.name.toLowerCase() !== 'warehouse').map((d) => d.name));
+  const [productionFlows, setProductionFlows] = useState<ProductionFlow[]>(() => mockRepository.getProductionFlows());
+  const [buyerOrders, setBuyerOrders] = useState<BuyerOrder[]>(() => mockRepository.getBuyerOrders());
 
   useEffect(() => {
-    async function loadData() {
-      try {
-        const [buyersData, articlesData, departmentsData, ordersData, flowsData] = await Promise.all([
-          apiService.getBuyers(),
-          apiService.getArticles(),
-          apiService.getDepartments(),
-          apiService.getBuyerOrders(),
-          apiService.getProductionFlows(),
-        ]);
-
-        setBuyers(buyersData);
-        setArticles(articlesData);
-        setDepartments(departmentsData.filter((d) => d.name.toLowerCase() !== 'warehouse').map((d) => d.name));
-        setBuyerOrders(ordersData);
-        setProductionFlows(flowsData);
-      } catch (error) {
-        console.error('Failed to load orders page data', error);
-      }
-    }
-
-    loadData();
-
     // Direct Real-time Firestore Subscriptions for Instant Multi-Device Sync
     const updateSortedOrders = (orders: BuyerOrder[]) => {
       if (!orders || !Array.isArray(orders)) return;
@@ -81,6 +63,19 @@ export function OrdersPage() {
       unsubFlows();
       window.removeEventListener('erp:buyerOrdersUpdated', handleWindowOrderSync);
     };
+  }, []);
+
+  // Parse URL search parameters (e.g. /orders?search=BO-147959)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const q = params.get('search') || params.get('order') || params.get('orderNumber') || params.get('orderId');
+      if (q) {
+        setBuyerSearchQuery(q);
+      }
+      const buyerParam = params.get('buyer');
+      if (buyerParam) setFilterBuyer(buyerParam);
+    }
   }, []);
 
   const [filterBuyer, setFilterBuyer] = useState<string>('');
@@ -154,8 +149,8 @@ export function OrdersPage() {
     const pendingDepts: string[] = [];
 
     order.requiredDepartments.forEach((dept) => {
-      const deptFlow = orderFlows.find((pf) => pf.department === dept);
-      if (deptFlow && deptFlow.completed >= order.quantity) {
+      const res = calculateMultiProcessProduction(orderFlows, dept, [], order.quantity || 0);
+      if (res.totalCompleted >= (order.quantity || 0) && (order.quantity || 0) > 0) {
         completedDepts.push(dept);
       } else {
         pendingDepts.push(dept);
@@ -1485,34 +1480,35 @@ export function OrdersPage() {
                       
                       {/* Clickable order info banner */}
                       <div
-                        onClick={() => toggleExpandOrder(o.id)}
-                        className="cursor-pointer flex items-center gap-2.5 sm:gap-4 flex-wrap flex-1 min-w-0"
+                        onClick={() => router.push(`/orders/${encodeURIComponent(o.orderNumber || o.id)}`)}
+                        className="cursor-pointer flex items-center gap-2.5 sm:gap-4 flex-wrap flex-1 min-w-0 group"
+                        title="Click to open full Order & Balance Sheet page"
                       >
-                        <span className="text-xs sm:text-sm font-black text-cyan-400 font-mono tracking-tight bg-cyan-500/10 border border-cyan-500/25 px-2.5 py-1 rounded-lg">
+                        <span className="text-xs sm:text-sm font-black text-blue-700 font-mono tracking-tight bg-blue-50 group-hover:bg-blue-100 border border-blue-200 px-2.5 py-1 rounded-lg shadow-2xs group-hover:underline transition">
                           {o.orderNumber}
                         </span>
 
-                        <div className="flex items-center gap-1.5 text-xs sm:text-sm font-bold text-[var(--ec-foreground)] truncate">
-                          <span className="text-[var(--ec-muted)] font-normal text-xs">Buyer:</span>
+                        <div className="flex items-center gap-1.5 text-xs sm:text-sm font-bold text-black truncate">
+                          <span className="text-slate-600 font-normal text-xs">Buyer:</span>
                           <span className="truncate">{o.buyerName || 'Unknown'}</span>
                         </div>
 
-                        <span className="text-[11px] bg-cyan-500/15 text-cyan-400 font-bold px-2 py-0.5 rounded-full border border-cyan-500/25">
+                        <span className="text-[11px] bg-blue-50 text-blue-700 font-bold px-2 py-0.5 rounded-full border border-blue-200">
                           {totalItemsCount} {totalItemsCount === 1 ? 'Item' : 'Items'}
                         </span>
 
-                        <div className="text-xs sm:text-sm font-extrabold text-[var(--ec-foreground)]">
-                          <span className="text-cyan-400 font-black">{o.quantity}</span> {o.unit}
+                        <div className="text-xs sm:text-sm font-extrabold text-black">
+                          <span className="text-blue-700 font-black">{o.quantity}</span> {o.unit}
                         </div>
 
                         {o.deliveryDate && (
-                          <span className="hidden md:inline-block text-[11px] text-[var(--ec-muted)]">
+                          <span className="hidden md:inline-block text-[11px] text-slate-600">
                             Delivery: <strong>{new Date(o.deliveryDate).toLocaleDateString()}</strong>
                           </span>
                         )}
 
                         <span className={`text-[10px] sm:text-[11px] px-2 py-0.5 rounded-full font-semibold ${
-                          o.priority === 'High' ? 'bg-red-500/15 text-red-400 border border-red-500/20' : 'bg-slate-500/15 text-[var(--ec-muted)]'
+                          o.priority === 'High' ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-slate-100 text-slate-800 border border-slate-200'
                         }`}>
                           {o.priority}
                         </span>
@@ -1521,13 +1517,20 @@ export function OrdersPage() {
 
                     {/* Action Controls */}
                     <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <Link
+                        href={`/orders/${encodeURIComponent(o.orderNumber || o.id)}`}
+                        className="rounded-lg px-2.5 py-1 text-[11px] font-bold transition flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white shadow-2xs"
+                        title="Open full page order and balance breakdown"
+                      >
+                        <span>View Page ➔</span>
+                      </Link>
                       <button
                         type="button"
                         onClick={() => toggleExpandOrder(o.id)}
                         className={`rounded-lg px-2.5 py-1 text-[11px] font-bold transition flex items-center gap-1 ${
                           isExpanded
-                            ? 'bg-cyan-500 text-black shadow-sm'
-                            : 'border border-[var(--ec-border)] text-[var(--ec-foreground)] hover:bg-[var(--ec-card)]'
+                            ? 'bg-slate-900 text-white shadow-sm'
+                            : 'border border-slate-200 text-slate-800 hover:bg-slate-100'
                         }`}
                       >
                         <span>{isExpanded ? 'Hide ▲' : 'Details ▼'}</span>
@@ -1535,14 +1538,14 @@ export function OrdersPage() {
                       <button
                         type="button"
                         onClick={() => loadOrderIntoForm(o)}
-                        className="rounded-lg border border-[var(--ec-border)] px-2.5 py-1 text-[11px] font-semibold text-[var(--ec-foreground)] hover:bg-[var(--ec-card)] hover:border-cyan-500/50 transition"
+                        className="rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-semibold text-slate-800 hover:bg-slate-100 hover:border-blue-300 transition"
                       >
                         Edit
                       </button>
                       <button
                         type="button"
                         onClick={() => handleDeleteSingleOrder(o)}
-                        className="rounded-lg border border-red-500/20 px-2.5 py-1 text-[11px] font-semibold text-red-400 hover:bg-red-500/10 hover:border-red-500/40 transition"
+                        className="rounded-lg border border-red-200 px-2.5 py-1 text-[11px] font-semibold text-red-600 hover:bg-red-50 hover:border-red-300 transition"
                       >
                         Delete
                       </button>
@@ -1701,10 +1704,26 @@ export function OrdersPage() {
 
                       {/* Notes */}
                       {o.notes && (
-                        <div className="text-xs text-[var(--ec-muted)] pt-2 border-t border-[var(--ec-border)]/60">
-                          <strong>Notes:</strong> {o.notes}
+                        <div className="text-xs text-slate-600 pt-2 border-t border-slate-200">
+                          <strong className="text-black">Notes:</strong> {o.notes}
                         </div>
                       )}
+
+                      {/* Full Order Page & Production Shortcut */}
+                      <div className="pt-3 border-t border-slate-200 flex items-center justify-between flex-wrap gap-2">
+                        <Link
+                          href={`/orders/${encodeURIComponent(o.orderNumber || o.id)}`}
+                          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition"
+                        >
+                          <span>📊 Open Full Order Page (Article Balance & Production Logs) →</span>
+                        </Link>
+                        <Link
+                          href={`/production?orderId=${o.id}`}
+                          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold border border-slate-200 transition"
+                        >
+                          <span>＋ Record Production</span>
+                        </Link>
+                      </div>
                     </div>
                   )}
                 </div>

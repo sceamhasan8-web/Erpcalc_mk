@@ -274,14 +274,15 @@ function NavItem({
   return (
     <Link
       href={href}
+      prefetch={true}
       onClick={onClick}
-      className={`group flex items-center gap-3 rounded-xl border px-3 py-2 text-xs sm:text-sm font-medium transition ${
+      className={`group flex items-center gap-3 rounded-xl border px-3 py-2 text-xs sm:text-sm font-semibold transition ${
         isActive
-          ? 'border-cyan-400/40 bg-cyan-500/10 text-cyan-300 shadow-sm'
-          : 'border-transparent text-[var(--ec-muted)] hover:border-[var(--ec-border)] hover:bg-[var(--ec-surface)] hover:text-[var(--ec-foreground)]'
+          ? 'border-blue-300 bg-blue-50 text-blue-700 font-bold shadow-xs'
+          : 'border-transparent text-slate-800 hover:bg-slate-100 hover:text-black'
       }`}
     >
-      <Icon className={`h-4 w-4 ${isActive ? 'text-cyan-300' : 'text-[var(--ec-muted)] group-hover:text-cyan-300'}`} />
+      <Icon className={`h-4 w-4 ${isActive ? 'text-blue-700' : 'text-slate-700 group-hover:text-black'}`} />
       <span className="truncate">{label}</span>
     </Link>
   );

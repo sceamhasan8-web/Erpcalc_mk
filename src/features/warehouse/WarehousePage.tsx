@@ -3,6 +3,9 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { apiService } from '@/services/apiService';
 import { firebaseService } from '@/services/firebaseService';
+import { erpService } from '@/services/erpService';
+import { mockRepository } from '@/repositories/mockRepository';
+import { PageSkeleton } from '@/components/PageSkeleton';
 import { useModal } from '@/context/ModalContext';
 import { useMaterialUnit, getMaterialUnit, DEFAULT_MATERIAL_UNITS } from '@/lib/unitSettings';
 import type { WarehouseStock, MaterialReceival, BuyerOrder, Buyer } from '@/types';
@@ -28,11 +31,11 @@ export function WarehousePage() {
   const materialUnit = useMaterialUnit();
   const { showConfirm, showAlert, toast } = useModal();
 
-  const [stocks, setStocks] = useState<WarehouseStock[]>([]);
-  const [receivals, setReceivals] = useState<MaterialReceival[]>([]);
-  const [buyers, setBuyers] = useState<Buyer[]>([]);
-  const [orders, setOrders] = useState<BuyerOrder[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [stocks, setStocks] = useState<WarehouseStock[]>(() => erpService.getWarehouseStocks());
+  const [receivals, setReceivals] = useState<MaterialReceival[]>(() => erpService.getMaterialReceivals());
+  const [buyers, setBuyers] = useState<Buyer[]>(() => mockRepository.getBuyers());
+  const [orders, setOrders] = useState<BuyerOrder[]>(() => mockRepository.getBuyerOrders());
+  const [loading, setLoading] = useState<boolean>(false);
 
   // Tab Navigation: 'order-wise' | 'stock' | 'receive'
   const [activeTab, setActiveTab] = useState<'order-wise' | 'stock' | 'receive'>('order-wise');
@@ -232,34 +235,8 @@ export function WarehousePage() {
     }
   };
 
-  // Load initial data and live subscriptions
+  // Live real-time subscriptions
   useEffect(() => {
-    async function loadData() {
-      try {
-        setLoading(true);
-        const [stocksData, receivalsData, buyersData, ordersData] = await Promise.all([
-          apiService.getWarehouseStocks(),
-          apiService.getMaterialReceivals(),
-          apiService.getBuyers(),
-          apiService.getBuyerOrders(),
-        ]);
-        setStocks(stocksData);
-        setReceivals(receivalsData);
-        setBuyers(buyersData);
-        setOrders(ordersData);
-
-        if (ordersData.length > 0 && !selectedOrderId) {
-          setSelectedOrderId(ordersData[0].id);
-        }
-      } catch (err) {
-        console.error('Failed to load warehouse data', err);
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    loadData();
-
     const unsubStocks = firebaseService.subscribeWarehouseStocks((live) => {
       if (live && Array.isArray(live)) setStocks(live);
     });
@@ -269,7 +246,12 @@ export function WarehousePage() {
     });
 
     const unsubOrders = firebaseService.subscribeOrders((live) => {
-      if (live && Array.isArray(live)) setOrders(live);
+      if (live && Array.isArray(live)) {
+        setOrders(live);
+        if (live.length > 0 && !selectedOrderId) {
+          setSelectedOrderId(live[0].id);
+        }
+      }
     });
 
     const handleLocalSync = () => {

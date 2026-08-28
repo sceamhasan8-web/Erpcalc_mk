@@ -109,21 +109,21 @@ export async function deleteHRUser(id: string): Promise<{ success: boolean; erro
 
 /**
  * Validate credentials against HR-managed users.
+ * Matches username or email, and verifies password and active state.
  * Returns the matching HRUser if valid, otherwise null.
  */
 export function validateHRUserCredentials(
   users: HRUser[],
-  sectionId: SectionId | string,
-  username: string,
+  usernameOrEmail: string,
   password: string
 ): HRUser | null {
-  const normalized = (s: string) => s.trim().toLowerCase();
+  const normalized = usernameOrEmail.trim().toLowerCase();
   return (
     users.find(
       (u) =>
         u.isActive &&
-        u.sectionId === sectionId &&
-        normalized(u.username) === normalized(username) &&
+        (u.username.trim().toLowerCase() === normalized ||
+         (u.email && u.email.trim().toLowerCase() === normalized)) &&
         u.password === password
     ) || null
   );

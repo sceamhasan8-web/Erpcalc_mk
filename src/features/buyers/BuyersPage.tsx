@@ -3,6 +3,7 @@ import { useEffect, useState, useRef } from 'react';
 import Link from 'next/link';
 import { apiService } from '@/services/apiService';
 import { firebaseService } from '@/services/firebaseService';
+import { mockRepository } from '@/repositories/mockRepository';
 import { useModal } from '@/context/ModalContext';
 import { useProductionUnit } from '@/lib/unitSettings';
 import type { Buyer, BuyerOrder } from '@/types';
@@ -11,8 +12,8 @@ import { Star, Mail, Phone, MapPin, Building, Plus, Trash2, Package } from 'luci
 export function BuyersPage() {
   const productionUnit = useProductionUnit();
   const { showAlert, showConfirm, toast } = useModal();
-  const [buyers, setBuyers] = useState<Buyer[]>([]);
-  const [buyerOrders, setBuyerOrders] = useState<BuyerOrder[]>([]);
+  const [buyers, setBuyers] = useState<Buyer[]>(() => mockRepository.getBuyers());
+  const [buyerOrders, setBuyerOrders] = useState<BuyerOrder[]>(() => mockRepository.getBuyerOrders());
   const [searchFilter, setSearchFilter] = useState<string>('');
   const [tierFilter, setTierFilter] = useState<string>('');
   const [showForm, setShowForm] = useState(false);
@@ -30,20 +31,6 @@ export function BuyersPage() {
   const isSubmittingRef = useRef<boolean>(false);
 
   useEffect(() => {
-    async function loadData() {
-      try {
-        const [buyersData, ordersData] = await Promise.all([
-          apiService.getBuyers(),
-          apiService.getBuyerOrders(),
-        ]);
-        setBuyers(buyersData);
-        setBuyerOrders(ordersData);
-      } catch (error) {
-        console.error('Failed to load buyers', error);
-      }
-    }
-    loadData();
-
     // Live Real-Time Subscription
     const unsubBuyers = firebaseService.subscribeBuyers((liveBuyers) => {
       setBuyers(liveBuyers);
@@ -312,15 +299,15 @@ export function BuyersPage() {
                 <div className="mb-4 flex items-start justify-between gap-2">
                   <Link href={`/buyers/${buyer.id}`} className="flex-1">
                     <div className="group cursor-pointer">
-                      <h3 className="font-semibold text-[var(--ec-foreground)] group-hover:text-cyan-400 transition-colors">{buyer.name}</h3>
-                      <p className="text-sm text-cyan-600 dark:text-cyan-300 flex items-center gap-1 mt-1">
-                        <Building className="h-3 w-3" />
+                      <h3 className="font-bold text-[var(--ec-foreground)] group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">{buyer.name}</h3>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1 mt-1 font-medium">
+                        <Building className="h-3.5 w-3.5" />
                         {buyer.company || 'N/A'}
                       </p>
                     </div>
                   </Link>
                   <div className="flex items-start gap-2">
-                    {buyer.tier && <span className={`px-2 py-1 text-xs font-medium rounded border whitespace-nowrap ${getTierColor(buyer.tier)}`}>{buyer.tier}</span>}
+                    {buyer.tier && <span className={`px-2 py-0.5 text-xs font-semibold rounded border whitespace-nowrap ${getTierColor(buyer.tier)}`}>{buyer.tier}</span>}
                     {deleteConfirm === buyer.id ? (
                       <div className="flex gap-1">
                         <button
@@ -336,7 +323,7 @@ export function BuyersPage() {
                     ) : (
                       <button
                         onClick={() => setDeleteConfirm(buyer.id)}
-                        className="text-red-400 hover:text-red-300 hover:bg-red-900/20 rounded px-2 py-1 transition-colors"
+                        className="text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30 rounded p-1 transition-colors"
                         title="Delete buyer"
                       >
                         <Trash2 className="h-4 w-4" />
@@ -349,23 +336,23 @@ export function BuyersPage() {
                 {buyer.rating && <div className="mb-3">{getRatingStars(buyer.rating)}</div>}
 
                 {/* Contact Info */}
-                <div className="space-y-2 mb-4 text-xs text-[var(--ec-muted)]">
+                <div className="space-y-2 mb-4 text-xs text-slate-600 dark:text-slate-300">
                   {buyer.email && (
                     <div className="flex items-center gap-2">
-                      <Mail className="h-3 w-3 flex-shrink-0 text-cyan-500" />
-                      <span className="truncate text-cyan-600 dark:text-cyan-300">{buyer.email}</span>
+                      <Mail className="h-3.5 w-3.5 flex-shrink-0 text-slate-400" />
+                      <span className="truncate">{buyer.email}</span>
                     </div>
                   )}
                   {buyer.phone && (
                     <div className="flex items-center gap-2">
-                      <Phone className="h-3 w-3 flex-shrink-0 text-cyan-500" />
-                      <span className="text-cyan-600 dark:text-cyan-300">{buyer.phone}</span>
+                      <Phone className="h-3.5 w-3.5 flex-shrink-0 text-slate-400" />
+                      <span>{buyer.phone}</span>
                     </div>
                   )}
                   {buyer.region && (
                     <div className="flex items-center gap-2">
-                      <MapPin className="h-3 w-3 flex-shrink-0 text-cyan-500" />
-                      <span className="text-cyan-600 dark:text-cyan-300">{buyer.region}</span>
+                      <MapPin className="h-3.5 w-3.5 flex-shrink-0 text-slate-400" />
+                      <span>{buyer.region}</span>
                     </div>
                   )}
                 </div>
