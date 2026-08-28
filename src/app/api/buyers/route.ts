@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { connectToDatabase } from '@/lib/mongoose';
 import { Buyer } from '@/models/schemas';
 import { mockRepository } from '@/repositories/mockRepository';
+import { sanitizePayload } from '@/lib/security';
 
 export async function GET() {
   try {
@@ -26,7 +27,8 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    const rawBody = await request.json();
+    const body = sanitizePayload(rawBody);
     if (!body.id) {
       body.id = `b_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     }
@@ -72,7 +74,9 @@ export async function POST(request: NextRequest) {
 
 export async function PATCH(request: NextRequest) {
   try {
-    const { id, updates } = await request.json();
+    const rawData = await request.json();
+    const { id, updates: rawUpdates } = sanitizePayload(rawData);
+    const updates = sanitizePayload(rawUpdates);
     if (!id || !updates) {
       return new Response(JSON.stringify({ message: 'Missing id or updates' }), { status: 400 });
     }

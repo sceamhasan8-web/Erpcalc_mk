@@ -1,27 +1,53 @@
 {
   "rules": {
     ".read": true,
-    ".write": true,
+    ".write": false,
     "buyers": {
+      ".read": true,
+      ".write": true,
       ".indexOn": ["name", "createdAt"]
     },
     "orders": {
+      ".read": true,
+      ".write": true,
       ".indexOn": ["buyerId", "articleId", "status", "deliveryDate"]
     },
     "productionFlows": {
+      ".read": true,
+      ".write": true,
       ".indexOn": ["orderId", "status"]
     },
     "warehouseStocks": {
+      ".read": true,
+      ".write": true,
       ".indexOn": ["location", "sku", "item"]
     },
     "finishedGoods": {
+      ".read": true,
+      ".write": true,
       ".indexOn": ["orderId", "status"]
     },
     "departments": {
+      ".read": true,
+      ".write": true,
       ".indexOn": ["name"]
     },
     "materialReceivals": {
+      ".read": true,
+      ".write": true,
       ".indexOn": ["date", "supplier"]
+    },
+    "hr_employees": {
+      ".read": true,
+      ".write": true
+    },
+    "hr_daily_manpower": {
+      ".read": true,
+      ".write": true
+    },
+    "settings": {
+      ".read": true,
+      ".write": true
     }
   }
 }

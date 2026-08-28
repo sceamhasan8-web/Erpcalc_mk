@@ -1,9 +1,12 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { erpService } from '@/services/erpService';
 import { apiService } from '@/services/apiService';
 import { firebaseService } from '@/services/firebaseService';
+import { mockRepository } from '@/repositories/mockRepository';
+import { PageSkeleton } from '@/components/PageSkeleton';
 import { useModal } from '@/context/ModalContext';
 import { useProductionUnit } from '@/lib/unitSettings';
 import { calculateMultiProcessProduction } from '@/lib/productionUtils';
@@ -13,6 +16,7 @@ import {
   Layers,
   TrendingUp,
   Clock,
+  Factory,
   CheckCircle2,
   AlertCircle,
   Target,
@@ -154,9 +158,6 @@ function isFlowOnDate(updatedAt?: string | Date | null, targetDateStr?: string):
   return getFlowLocalDate(updatedAt) === targetDateStr;
 }
 
-import { mockRepository } from '@/repositories/mockRepository';
-import { PageSkeleton } from '@/components/PageSkeleton';
-
 export default function PlanningPage() {
   const defaultProductionUnit = useProductionUnit();
   const { showAlert, toast } = useModal();
@@ -197,6 +198,9 @@ export default function PlanningPage() {
   const [dwIsSaving, setDwIsSaving] = useState(false);
   const [showInPageExcelView, setShowInPageExcelView] = useState<boolean>(true);
   const [scheduleViewMode, setScheduleViewMode] = useState<'all_orders' | 'selected_order'>('selected_order');
+
+  // Overview Section-Wise Target Horizon state
+  const [overviewSectionHorizon, setOverviewSectionHorizon] = useState<'daily' | 'weekly' | 'monthly' | 'total'>('daily');
 
   // Date-Wise Production Report Sheet Modal state
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
@@ -357,16 +361,25 @@ export default function PlanningPage() {
     const sections: Record<string, SectionPlanTarget> = {};
 
     reqDepts.forEach((dept) => {
+      const maxOrderQty = order.quantity || 0;
       if (existing?.sections?.[dept]) {
-        sections[dept] = existing.sections[dept];
+        const sec = existing.sections[dept];
+        const rawTarget = sec.totalTarget || maxOrderQty;
+        const clampedTarget = maxOrderQty > 0 ? Math.min(maxOrderQty, rawTarget) : rawTarget;
+        sections[dept] = {
+          ...sec,
+          totalTarget: clampedTarget,
+          monthlyTarget: maxOrderQty > 0 ? Math.min(clampedTarget, sec.monthlyTarget || clampedTarget) : sec.monthlyTarget,
+          dailyTarget: maxOrderQty > 0 ? Math.min(clampedTarget, sec.dailyTarget || 0) : sec.dailyTarget,
+        };
       } else {
-        const totalQty = order.quantity || 0;
+        const totalQty = maxOrderQty;
         const deptObj = departments.find((d) => d.name === dept);
         sections[dept] = {
           department: dept,
           dailyTarget: 0,
           weeklyTarget: 0,
-          monthlyTarget: 0,
+          monthlyTarget: totalQty,
           totalTarget: totalQty,
           startDate: order.createdAt ? order.createdAt.slice(0, 10) : new Date().toISOString().slice(0, 10),
           targetDeliveryDate: order.deliveryDate ? order.deliveryDate.slice(0, 10) : undefined,
@@ -480,13 +493,40 @@ export default function PlanningPage() {
     }
   };
 
-  // Cell edit in Date-Wise Planner
+  // Cell edit in Date-Wise Planner with Order Quantity capping
   const handleDwCellChange = (dept: string, dateStr: string, value: number) => {
+    const numVal = Math.max(0, value);
+    if (!dwCurrentOrder) {
+      setDwSchedule((prev) => ({
+        ...prev,
+        [dept]: {
+          ...(prev[dept] || {}),
+          [dateStr]: numVal,
+        },
+      }));
+      return;
+    }
+
+    const maxOrderQty = dwCurrentOrder.quantity || 0;
+    const currentMap = dwSchedule[dept] || {};
+    
+    // Sum other dates in this dept
+    let otherSum = 0;
+    Object.entries(currentMap).forEach(([dStr, v]) => {
+      if (dStr !== dateStr) otherSum += (v || 0);
+    });
+
+    let finalVal = numVal;
+    if (maxOrderQty > 0 && otherSum + numVal > maxOrderQty) {
+      finalVal = Math.max(0, maxOrderQty - otherSum);
+      toast.warning(`Total scheduled plan cannot exceed Order Quantity (${maxOrderQty.toLocaleString()})! Clamped to ${finalVal}.`);
+    }
+
     setDwSchedule((prev) => ({
       ...prev,
       [dept]: {
         ...(prev[dept] || {}),
-        [dateStr]: Math.max(0, value),
+        [dateStr]: finalVal,
       },
     }));
   };
@@ -547,7 +587,7 @@ export default function PlanningPage() {
     if (workDays.length === 0) return;
 
     const basePerDay = Math.floor(totalQty / workDays.length);
-    let remainder = totalQty - (basePerDay * workDays.length);
+    const remainder = totalQty - (basePerDay * workDays.length);
 
     setDwSchedule((prev) => {
       const next = { ...prev };
@@ -745,16 +785,26 @@ export default function PlanningPage() {
           }
         });
 
+        const maxQty = Number(dwCurrentOrder.quantity) || 0;
+        const clampedGridPlanned = maxQty > 0 ? Math.min(maxQty, totalGridPlanned) : totalGridPlanned;
+
+        const finalTotalTarget: number = clampedGridPlanned > 0
+          ? clampedGridPlanned
+          : (maxQty > 0 ? Math.min(maxQty, existingTarget.totalTarget || maxQty) : (existingTarget.totalTarget || 0));
+
         // Compute new daily target from grid if grid has data
-        const calcDaily = activeWorkDays > 0 ? Math.ceil(totalGridPlanned / activeWorkDays) : existingTarget.dailyTarget;
-        const calcMonthly = totalGridPlanned > 0 ? totalGridPlanned : (existingTarget.monthlyTarget || dwCurrentOrder.quantity);
+        const calcDaily = activeWorkDays > 0
+          ? Math.ceil(finalTotalTarget / activeWorkDays)
+          : Math.min(finalTotalTarget, existingTarget.dailyTarget || Math.ceil(finalTotalTarget / 10));
+
+        const calcMonthly = Math.min(finalTotalTarget, existingTarget.monthlyTarget || finalTotalTarget);
 
         updatedSections[dept] = {
           ...existingTarget,
           dailyTarget: calcDaily,
-          weeklyTarget: calcDaily * DEFAULT_WORKING_DAYS_PER_WEEK,
+          weeklyTarget: Math.min(finalTotalTarget, calcDaily * DEFAULT_WORKING_DAYS_PER_WEEK),
           monthlyTarget: calcMonthly,
-          totalTarget: totalGridPlanned > 0 ? totalGridPlanned : (existingTarget.totalTarget || dwCurrentOrder.quantity),
+          totalTarget: finalTotalTarget,
           dailyBreakdown: deptDateMap,
         };
       });
@@ -958,63 +1008,57 @@ export default function PlanningPage() {
 
     // Retrieve Date-Wise Production Schedule map
     const orderPlan = plans.find((p) => p.orderId === orderId || p.orderNumber === orderId);
+    const matchedOrder = uniqueOrders.find((o) => o.id === orderId || o.orderNumber === orderId);
+    const maxOrderQty = matchedOrder?.quantity || orderPlan?.totalQuantity || 0;
+
+    const orderHasDateWiseSchedule = Boolean(
+      orderPlan?.dateWiseTargets &&
+      Object.values(orderPlan.dateWiseTargets).some((dMap) =>
+        dMap && Object.values(dMap).some((v) => typeof v === 'number' && v > 0)
+      )
+    );
+
     const dateMap = orderPlan?.dateWiseTargets?.[deptName] || sectionPlan?.dailyBreakdown;
-    const hasExplicitSchedule = Boolean(dateMap && Object.values(dateMap).some((v) => typeof v === 'number' && v > 0));
+    const hasSectionSchedule = Boolean(dateMap && Object.values(dateMap).some((v) => typeof v === 'number' && v > 0));
 
-    // 1. Daily Target: Strictly take target for active date from date-wise schedule if configured
-    let dailyTarget = 0;
-    let isDateWiseDaily = false;
-    if (hasExplicitSchedule) {
-      dailyTarget = (dateMap && typeof dateMap[targetDateLocalStr] === 'number') ? dateMap[targetDateLocalStr] : 0;
-      isDateWiseDaily = true;
-    } else {
-      dailyTarget = sectionPlan?.dailyTarget || 0;
-    }
-
-    // 2. Weekly Target: Summed across current week (clipped to 1st of month)
-    let weekSumFromSchedule = 0;
-    const curW = new Date(weekStart);
-    while (curW <= weekEnd) {
-      const dStr = curW.toISOString().slice(0, 10);
-      if (hasExplicitSchedule) {
-        weekSumFromSchedule += (dateMap && dateMap[dStr]) || 0;
-      } else {
-        if (curW.getDay() !== 0) {
-          weekSumFromSchedule += (sectionPlan?.dailyTarget || 0);
-        }
-      }
-      curW.setDate(curW.getDate() + 1);
-    }
-    const weeklyTarget = weekSumFromSchedule;
-
-    // 3. Monthly Target: Summed across full month (1st to last day)
-    let monthSumFromSchedule = 0;
-    const curM = new Date(firstOfMonth);
-    while (curM <= lastOfMonth) {
-      const dStr = curM.toISOString().slice(0, 10);
-      if (hasExplicitSchedule) {
-        monthSumFromSchedule += (dateMap && dateMap[dStr]) || 0;
-      } else {
-        if (curM.getDay() !== 0) {
-          monthSumFromSchedule += (sectionPlan?.dailyTarget || 0);
-        }
-      }
-      curM.setDate(curM.getDate() + 1);
-    }
-    const monthlyTarget = monthSumFromSchedule > 0 ? monthSumFromSchedule : (sectionPlan?.monthlyTarget || 0);
-
-    // 4. Total Target: Order total target or total sum of all scheduled dates
+    // Calculate sum of all scheduled dates in grid for this section
     let totalScheduleSum = 0;
-    let hasScheduleTotal = false;
-    if (dateMap) {
-      Object.values(dateMap).forEach((val) => {
+    let daySumFromSchedule = 0;
+    let weekSumFromSchedule = 0;
+    let monthSumFromSchedule = 0;
+
+    if (dateMap && typeof dateMap === 'object') {
+      Object.entries(dateMap).forEach(([dStr, val]) => {
         if (typeof val === 'number' && val > 0) {
           totalScheduleSum += val;
-          hasScheduleTotal = true;
+          if (dStr === targetDateLocalStr) daySumFromSchedule += val;
+          if (dStr >= weekStartStr && dStr <= weekEndStr) weekSumFromSchedule += val;
+          if (dStr >= monthStartStr && dStr <= monthEndStr) monthSumFromSchedule += val;
         }
       });
     }
-    const totalTarget = sectionPlan?.totalTarget || (hasScheduleTotal ? totalScheduleSum : (orderPlan?.totalQuantity || 0));
+
+    let dailyTarget = 0;
+    let weeklyTarget = 0;
+    let monthlyTarget = 0;
+    let totalTarget = 0;
+    let isDateWiseDaily = false;
+
+    if (orderHasDateWiseSchedule || hasSectionSchedule) {
+      // Strictly use date-wise plan schedule from sheet
+      totalTarget = maxOrderQty > 0 ? Math.min(maxOrderQty, totalScheduleSum) : totalScheduleSum;
+      dailyTarget = Math.min(totalTarget, daySumFromSchedule);
+      weeklyTarget = Math.min(totalTarget, weekSumFromSchedule);
+      monthlyTarget = Math.min(totalTarget, monthSumFromSchedule);
+      isDateWiseDaily = true;
+    } else {
+      // Fallback to section base target only if no date-wise sheet is configured
+      const rawTotal = sectionPlan?.totalTarget && sectionPlan.totalTarget > 0 ? sectionPlan.totalTarget : maxOrderQty;
+      totalTarget = maxOrderQty > 0 ? Math.min(maxOrderQty, rawTotal) : rawTotal;
+      dailyTarget = sectionPlan?.dailyTarget && sectionPlan.dailyTarget > 0 ? Math.min(totalTarget, sectionPlan.dailyTarget) : (totalTarget > 0 ? Math.ceil(totalTarget / 10) : 0);
+      weeklyTarget = sectionPlan?.weeklyTarget && sectionPlan.weeklyTarget > 0 ? Math.min(totalTarget, sectionPlan.weeklyTarget) : Math.min(totalTarget, dailyTarget * 6);
+      monthlyTarget = sectionPlan?.monthlyTarget && sectionPlan.monthlyTarget > 0 ? Math.min(totalTarget, sectionPlan.monthlyTarget) : totalTarget;
+    }
 
     const todayDue = Math.max(0, dailyTarget - todayActual);
     const weekDue = Math.max(0, weeklyTarget - weekActual);
@@ -1056,7 +1100,7 @@ export default function PlanningPage() {
       totalPct,
       status,
       isDateWiseDaily,
-      hasDateWiseSchedule: Boolean(hasScheduleTotal || hasExplicitSchedule),
+      hasDateWiseSchedule: Boolean(orderHasDateWiseSchedule || hasSectionSchedule),
     };
   };
 
@@ -1151,6 +1195,120 @@ export default function PlanningPage() {
     };
   }, [uniqueOrders, plans, productionFlows, validDeptNames, departments, planningDate]);
 
+  // Section-Wise Target & Production Rollup for All Factory Departments
+  const factorySectionSummary = useMemo(() => {
+    const targetDate = new Date(planningDate || new Date().toISOString().slice(0, 10));
+    targetDate.setHours(0, 0, 0, 0);
+
+    const year = targetDate.getFullYear();
+    const month = targetDate.getMonth();
+    const firstOfMonth = new Date(year, month, 1);
+    const lastOfMonth = new Date(year, month + 1, 0, 23, 59, 59, 999);
+
+    const { monday, sunday } = getWeekRange(targetDate);
+    const weekStart = new Date(monday < firstOfMonth ? firstOfMonth : monday);
+    weekStart.setHours(0, 0, 0, 0);
+    const weekEnd = new Date(sunday > lastOfMonth ? lastOfMonth : sunday);
+    weekEnd.setHours(23, 59, 59, 999);
+
+    const planDateLocalStr = planningDate || getFlowLocalDate(targetDate);
+    const weekStartStr = getFlowLocalDate(weekStart);
+    const weekEndStr = getFlowLocalDate(weekEnd);
+    const monthStartStr = getFlowLocalDate(firstOfMonth);
+    const monthEndStr = getFlowLocalDate(lastOfMonth);
+
+    return validDeptNames.map((dept) => {
+      let plannedDaily = 0;
+      let plannedWeekly = 0;
+      let plannedMonthly = 0;
+      let totalPlanned = 0;
+      let activeOrdersForDept = 0;
+
+      uniqueOrders.forEach((order) => {
+        if (order.status === 'Completed') return;
+        const reqDepts = (order.requiredDepartments && order.requiredDepartments.length > 0)
+          ? order.requiredDepartments
+          : validDeptNames;
+
+        if (!reqDepts.includes(dept)) return;
+        activeOrdersForDept++;
+
+        const plan = getOrderPlan(order);
+        const sTarget = plan.sections[dept];
+        if (sTarget) {
+          const metrics = getOrderDeptMetrics(order.id, dept, sTarget, planningDate);
+          plannedDaily += metrics.dailyTarget;
+          plannedWeekly += metrics.weeklyTarget;
+          plannedMonthly += metrics.monthlyTarget;
+          totalPlanned += metrics.totalTarget;
+        } else {
+          const defaultDaily = Math.ceil((order.quantity || 0) / 10);
+          plannedDaily += defaultDaily;
+          plannedWeekly += defaultDaily * 6;
+          plannedMonthly += (order.quantity || 0);
+          totalPlanned += (order.quantity || 0);
+        }
+      });
+
+      const deptFlows = productionFlows.filter((f) => f.department === dept);
+
+      const actualToday = deptFlows
+        .filter((f) => isFlowOnDate(f.updatedAt, planDateLocalStr))
+        .reduce((sum, f) => sum + (f.completed || 0), 0);
+
+      const actualWeek = deptFlows
+        .filter((f) => {
+          const fDate = getFlowLocalDate(f.updatedAt);
+          return fDate >= weekStartStr && fDate <= weekEndStr;
+        })
+        .reduce((sum, f) => sum + (f.completed || 0), 0);
+
+      const actualMonth = deptFlows
+        .filter((f) => {
+          const fDate = getFlowLocalDate(f.updatedAt);
+          return fDate >= monthStartStr && fDate <= monthEndStr;
+        })
+        .reduce((sum, f) => sum + (f.completed || 0), 0);
+
+      const actualTotal = deptFlows.reduce((sum, f) => sum + (f.completed || 0), 0);
+
+      let targetVal = plannedDaily;
+      let actualVal = actualToday;
+      if (overviewSectionHorizon === 'weekly') {
+        targetVal = plannedWeekly;
+        actualVal = actualWeek;
+      } else if (overviewSectionHorizon === 'monthly') {
+        targetVal = plannedMonthly;
+        actualVal = actualMonth;
+      } else if (overviewSectionHorizon === 'total') {
+        targetVal = totalPlanned;
+        actualVal = actualTotal;
+      }
+
+      const remainingDue = Math.max(0, targetVal - actualVal);
+      const fillRate = targetVal > 0 ? Math.min(100, Math.round((actualVal / targetVal) * 100)) : (actualVal > 0 ? 100 : 0);
+      const isDone = remainingDue === 0 && targetVal > 0;
+
+      return {
+        department: dept,
+        plannedDaily,
+        plannedWeekly,
+        plannedMonthly,
+        totalPlanned,
+        actualToday,
+        actualWeek,
+        actualMonth,
+        actualTotal,
+        targetVal,
+        actualVal,
+        remainingDue,
+        fillRate,
+        isDone,
+        activeOrdersForDept,
+      };
+    });
+  }, [uniqueOrders, plans, productionFlows, validDeptNames, departments, planningDate, overviewSectionHorizon]);
+
   // Aggregate targets across all sections for the currently selected order
   const orderAggregateTargets = useMemo(() => {
     if (!selectedOrder) {
@@ -1226,12 +1384,30 @@ export default function PlanningPage() {
     toast.success(`Distributed: ${daily} ${editingPlanOrder.unit || defaultProductionUnit}/day across all sections!`);
   };
 
-  // Save modified plan
+  // Save modified plan with strict bounds on order quantity
   const handleSavePlan = async () => {
     if (!editingPlanOrder) return;
     setIsSavingPlan(true);
 
+    const maxOrderQty = editingPlanOrder.quantity || 0;
+    const validatedSections: Record<string, SectionPlanTarget> = {};
+
+    Object.entries(editSections).forEach(([dept, sTarget]) => {
+      const rawTarget = typeof sTarget.totalTarget === 'number' ? sTarget.totalTarget : maxOrderQty;
+      const clampedTotal: number = maxOrderQty > 0 ? Math.min(maxOrderQty, rawTarget || maxOrderQty) : (rawTarget || 0);
+      const clampedDaily: number = Math.min(clampedTotal, sTarget.dailyTarget || 0);
+      const clampedMonthly: number = Math.min(clampedTotal, sTarget.monthlyTarget || clampedTotal);
+      validatedSections[dept] = {
+        ...sTarget,
+        totalTarget: clampedTotal,
+        dailyTarget: clampedDaily,
+        weeklyTarget: Math.min(clampedTotal, sTarget.weeklyTarget || (clampedDaily * DEFAULT_WORKING_DAYS_PER_WEEK)),
+        monthlyTarget: clampedMonthly,
+      };
+    });
+
     try {
+      const existingPlan = plans.find((p) => p.orderId === editingPlanOrder.id || p.orderNumber === editingPlanOrder.orderNumber);
       const planPayload: OrderProductionPlan = {
         id: `plan_${editingPlanOrder.id}`,
         orderId: editingPlanOrder.id,
@@ -1242,7 +1418,8 @@ export default function PlanningPage() {
         unit: editingPlanOrder.unit || defaultProductionUnit,
         startDate: editingPlanOrder.createdAt ? editingPlanOrder.createdAt.slice(0, 10) : undefined,
         targetDeliveryDate: editingPlanOrder.deliveryDate ? editingPlanOrder.deliveryDate.slice(0, 10) : undefined,
-        sections: editSections,
+        sections: validatedSections,
+        dateWiseTargets: existingPlan?.dateWiseTargets || {},
         status: 'In Progress',
         updatedAt: new Date().toISOString(),
       };
@@ -1343,12 +1520,19 @@ export default function PlanningPage() {
           </div>
         </div>
 
-        {/* 4 Summary KPI Cards (Responsive 2x2 grid on mobile, 4-col on desktop) */}
+        {/* 4 Summary KPI Cards (Clickable to view detailed Target-Wise Production Entries) */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3.5 pt-3 border-t border-slate-200">
           {/* Today's Target vs Produced */}
-          <div className="bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl p-2.5 sm:p-3.5 space-y-1.5 shadow-xs">
+          <Link
+            href="/planning/target-status?view=daily"
+            className="bg-slate-50 hover:bg-blue-50/50 border border-slate-200 hover:border-blue-400 rounded-xl sm:rounded-2xl p-2.5 sm:p-3.5 space-y-1.5 shadow-xs transition group cursor-pointer"
+            title="Click to view Today's Target-Wise Production Entries"
+          >
             <div className="flex items-center justify-between">
-              <span className="text-[10px] sm:text-[11px] font-bold text-slate-700 uppercase tracking-wider">Today's Target</span>
+              <span className="text-[10px] sm:text-[11px] font-bold text-slate-700 group-hover:text-blue-700 uppercase tracking-wider flex items-center gap-1">
+                <span>Today&apos;s Target</span>
+                <ArrowUpRight className="h-3 w-3 opacity-0 group-hover:opacity-100 transition" />
+              </span>
               <span className={`text-[9px] sm:text-[10px] font-black px-1.5 py-0.5 rounded-full ${factorySummary.todayFillRate >= 90 ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
                 }`}>
                 {factorySummary.todayFillRate}%
@@ -1368,12 +1552,19 @@ export default function PlanningPage() {
                 style={{ width: `${factorySummary.todayFillRate}%` }}
               />
             </div>
-          </div>
+          </Link>
 
           {/* This Week's Target vs Produced */}
-          <div className="bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl p-2.5 sm:p-3.5 space-y-1.5 shadow-xs">
+          <Link
+            href="/planning/target-status?view=weekly"
+            className="bg-slate-50 hover:bg-emerald-50/50 border border-slate-200 hover:border-emerald-400 rounded-xl sm:rounded-2xl p-2.5 sm:p-3.5 space-y-1.5 shadow-xs transition group cursor-pointer"
+            title="Click to view Weekly Target-Wise Production Entries"
+          >
             <div className="flex items-center justify-between">
-              <span className="text-[10px] sm:text-[11px] font-bold text-slate-700 uppercase tracking-wider">Weekly Target</span>
+              <span className="text-[10px] sm:text-[11px] font-bold text-slate-700 group-hover:text-emerald-700 uppercase tracking-wider flex items-center gap-1">
+                <span>Weekly Target</span>
+                <ArrowUpRight className="h-3 w-3 opacity-0 group-hover:opacity-100 transition" />
+              </span>
               <span className="text-[9px] sm:text-[10px] font-black px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-800">
                 {factorySummary.weekFillRate}%
               </span>
@@ -1392,12 +1583,19 @@ export default function PlanningPage() {
                 style={{ width: `${factorySummary.weekFillRate}%` }}
               />
             </div>
-          </div>
+          </Link>
 
           {/* Factory Total Due / Backlog */}
-          <div className="bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl p-2.5 sm:p-3.5 space-y-1.5 shadow-xs">
+          <Link
+            href="/planning/target-status?view=due"
+            className="bg-slate-50 hover:bg-rose-50/50 border border-slate-200 hover:border-rose-400 rounded-xl sm:rounded-2xl p-2.5 sm:p-3.5 space-y-1.5 shadow-xs transition group cursor-pointer"
+            title="Click to view Total Factory Due & Backlog by Section"
+          >
             <div className="flex items-center justify-between">
-              <span className="text-[10px] sm:text-[11px] font-bold text-slate-700 uppercase tracking-wider">Total Factory Due</span>
+              <span className="text-[10px] sm:text-[11px] font-bold text-slate-700 group-hover:text-rose-700 uppercase tracking-wider flex items-center gap-1">
+                <span>Total Factory Due</span>
+                <ArrowUpRight className="h-3 w-3 opacity-0 group-hover:opacity-100 transition" />
+              </span>
               <span className="text-[9px] sm:text-[10px] font-black px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-800">
                 Backlog
               </span>
@@ -1411,12 +1609,19 @@ export default function PlanningPage() {
             <p className="text-[9px] sm:text-[10px] text-slate-600 truncate">
               Uncompleted target work
             </p>
-          </div>
+          </Link>
 
           {/* Active Orders & Behind Sections */}
-          <div className="bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl p-2.5 sm:p-3.5 space-y-1.5 shadow-xs">
+          <Link
+            href="/planning/target-status?view=operations"
+            className="bg-slate-50 hover:bg-amber-50/50 border border-slate-200 hover:border-amber-400 rounded-xl sm:rounded-2xl p-2.5 sm:p-3.5 space-y-1.5 shadow-xs transition group cursor-pointer"
+            title="Click to view Active Operations with pending section work"
+          >
             <div className="flex items-center justify-between">
-              <span className="text-[10px] sm:text-[11px] font-bold text-slate-700 uppercase tracking-wider">Active Operations</span>
+              <span className="text-[10px] sm:text-[11px] font-bold text-slate-700 group-hover:text-amber-700 uppercase tracking-wider flex items-center gap-1">
+                <span>Active Operations</span>
+                <ArrowUpRight className="h-3 w-3 opacity-0 group-hover:opacity-100 transition" />
+              </span>
               <span className="text-[9px] sm:text-[10px] font-black px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-800">
                 {factorySummary.activeOrdersCount} Orders
               </span>
@@ -1430,6 +1635,131 @@ export default function PlanningPage() {
             <p className="text-[9px] sm:text-[10px] text-slate-600 truncate">
               Across running departments
             </p>
+          </Link>
+        </div>
+
+        {/* Section-Wise Target & Production Breakdown Grid */}
+        <div className="pt-4 border-t border-slate-200 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2">
+              <Factory className="h-4 w-4 text-blue-700" />
+              <span className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                Section-Wise Production Targets & Live Output
+              </span>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200">
+                {validDeptNames.length} Sections
+              </span>
+            </div>
+
+            {/* Horizon Filter Switcher & Link to full page */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-xl border border-slate-200 text-[11px] font-bold">
+                <button
+                  type="button"
+                  onClick={() => setOverviewSectionHorizon('daily')}
+                  className={`px-2.5 py-1 rounded-lg transition ${
+                    overviewSectionHorizon === 'daily' ? 'bg-white text-blue-700 shadow-2xs font-black' : 'text-slate-600 hover:text-black'
+                  }`}
+                >
+                  Today
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOverviewSectionHorizon('weekly')}
+                  className={`px-2.5 py-1 rounded-lg transition ${
+                    overviewSectionHorizon === 'weekly' ? 'bg-white text-emerald-700 shadow-2xs font-black' : 'text-slate-600 hover:text-black'
+                  }`}
+                >
+                  Weekly
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOverviewSectionHorizon('monthly')}
+                  className={`px-2.5 py-1 rounded-lg transition ${
+                    overviewSectionHorizon === 'monthly' ? 'bg-white text-purple-700 shadow-2xs font-black' : 'text-slate-600 hover:text-black'
+                  }`}
+                >
+                  Monthly
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOverviewSectionHorizon('total')}
+                  className={`px-2.5 py-1 rounded-lg transition ${
+                    overviewSectionHorizon === 'total' ? 'bg-white text-rose-700 shadow-2xs font-black' : 'text-slate-600 hover:text-black'
+                  }`}
+                >
+                  Total Due
+                </button>
+              </div>
+
+              <Link
+                href={`/planning/target-status?view=${overviewSectionHorizon === 'total' ? 'due' : overviewSectionHorizon}`}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 text-[11px] font-bold transition"
+                title="Open detailed target entries and logs page"
+              >
+                <span>View Full Entries</span>
+                <ArrowUpRight className="h-3 w-3" />
+              </Link>
+            </div>
+          </div>
+
+          {/* Section Target Cards Grid */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 sm:gap-2.5">
+            {factorySectionSummary.map((sec) => (
+              <Link
+                key={sec.department}
+                href={`/planning/target-status?view=${overviewSectionHorizon === 'total' ? 'due' : overviewSectionHorizon}`}
+                className={`p-2.5 sm:p-3 rounded-xl sm:rounded-2xl border transition group cursor-pointer shadow-2xs ${
+                  sec.isDone
+                    ? 'bg-emerald-50/70 border-emerald-300 hover:border-emerald-400'
+                    : sec.fillRate > 0
+                    ? 'bg-slate-50 hover:bg-blue-50/50 border-slate-200 hover:border-blue-300'
+                    : 'bg-slate-50/60 hover:bg-slate-100 border-slate-200'
+                }`}
+                title={`Click to view target entries for ${sec.department}`}
+              >
+                <div className="flex items-center justify-between gap-1 mb-1.5">
+                  <span className="font-black text-xs text-black group-hover:text-blue-700 truncate">
+                    {sec.department}
+                  </span>
+                  <span className={`text-[9px] font-black px-1.5 py-0.2 rounded ${
+                    sec.isDone
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : sec.fillRate > 0
+                      ? 'bg-blue-100 text-blue-800'
+                      : 'bg-slate-200 text-slate-700'
+                  }`}>
+                    {sec.fillRate}%
+                  </span>
+                </div>
+
+                <div className="space-y-0.5 text-[11px]">
+                  <div className="flex justify-between items-baseline">
+                    <span className="text-[10px] text-slate-500 font-semibold">Target:</span>
+                    <strong className="text-black font-bold">{sec.targetVal.toLocaleString()}</strong>
+                  </div>
+                  <div className="flex justify-between items-baseline">
+                    <span className="text-[10px] text-slate-500 font-semibold">Produced:</span>
+                    <strong className="text-emerald-700 font-black">+{sec.actualVal.toLocaleString()}</strong>
+                  </div>
+                  <div className="flex justify-between items-baseline">
+                    <span className="text-[10px] text-slate-500 font-semibold">Due:</span>
+                    <strong className={sec.remainingDue > 0 ? 'text-rose-700 font-black' : 'text-slate-400'}>
+                      {sec.remainingDue.toLocaleString()}
+                    </strong>
+                  </div>
+                </div>
+
+                <div className="w-full bg-slate-200 h-1 rounded-full overflow-hidden mt-1.5">
+                  <div
+                    className={`h-full rounded-full transition-all duration-300 ${
+                      sec.isDone ? 'bg-emerald-600' : 'bg-blue-600'
+                    }`}
+                    style={{ width: `${sec.fillRate}%` }}
+                  />
+                </div>
+              </Link>
+            ))}
           </div>
         </div>
       </div>
@@ -1683,8 +2013,19 @@ export default function PlanningPage() {
                       </div>
                     </div>
 
-                    <div className="text-xs text-indigo-200">
-                      Selected Date: <strong className="text-cyan-300">{planningDate}</strong>
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <Link
+                        href="/planning/target-status"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 hover:text-cyan-200 border border-cyan-500/40 text-xs font-bold transition shadow-xs"
+                        title="Open full Target-Wise Production Status & Entry Logs page"
+                      >
+                        <Target className="h-3.5 w-3.5" />
+                        <span>Target Entries Page</span>
+                        <ArrowUpRight className="h-3 w-3" />
+                      </Link>
+                      <div className="text-xs text-indigo-200">
+                        Selected Date: <strong className="text-cyan-300">{planningDate}</strong>
+                      </div>
                     </div>
                   </div>
 
@@ -3655,16 +3996,20 @@ export default function PlanningPage() {
                         <input
                           type="number"
                           min="0"
+                          max={editingPlanOrder.quantity || undefined}
                           value={s.dailyTarget || ''}
                           onChange={(e) => {
-                            const val = Number(e.target.value) || 0;
+                            const rawVal = Number(e.target.value) || 0;
+                            const maxQty = editingPlanOrder.quantity || 0;
+                            const val = maxQty > 0 ? Math.min(maxQty, Math.max(0, rawVal)) : Math.max(0, rawVal);
+                            const curTotal = s.totalTarget || maxQty;
                             setEditSections((prev) => ({
                               ...prev,
                               [dept]: {
                                 ...prev[dept],
                                 dailyTarget: val,
-                                weeklyTarget: val * DEFAULT_WORKING_DAYS_PER_WEEK,
-                                monthlyTarget: val * 26,
+                                weeklyTarget: Math.min(curTotal, val * DEFAULT_WORKING_DAYS_PER_WEEK),
+                                monthlyTarget: curTotal,
                               },
                             }));
                           }}
@@ -3676,19 +4021,23 @@ export default function PlanningPage() {
                       {/* Total Target */}
                       <div>
                         <label className="block text-[9px] font-bold text-[var(--ec-muted)] uppercase mb-1">
-                          Total Order Target
+                          Total Order Target (Max: {editingPlanOrder.quantity?.toLocaleString()})
                         </label>
                         <input
                           type="number"
                           min="0"
+                          max={editingPlanOrder.quantity || undefined}
                           value={s.totalTarget || ''}
                           onChange={(e) => {
-                            const val = Number(e.target.value) || 0;
+                            const rawVal = Number(e.target.value) || 0;
+                            const maxQty = editingPlanOrder.quantity || 0;
+                            const val = maxQty > 0 ? Math.min(maxQty, Math.max(0, rawVal)) : Math.max(0, rawVal);
                             setEditSections((prev) => ({
                               ...prev,
                               [dept]: {
                                 ...prev[dept],
                                 totalTarget: val,
+                                monthlyTarget: val,
                               },
                             }));
                           }}

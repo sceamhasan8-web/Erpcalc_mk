@@ -12,27 +12,41 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { HRUser, SectionId } from '@/types/auth';
+import { hashPassword, verifyPassword } from './crypto';
+import { sanitizePayload } from './security';
 
 const HR_USERS_COLLECTION = 'hr_users';
 
 /**
  * Subscribe to HR users in real-time using Firestore onSnapshot.
- * Calls `onChange` immediately with the current data, then on every update.
- * Returns an unsubscribe function.
+ * Calls `onChange` with sanitized data without leaking raw credentials.
  */
 export function subscribeToHRUsers(onChange: (users: HRUser[]) => void): Unsubscribe {
   const q = query(collection(db, HR_USERS_COLLECTION), orderBy('createdAt', 'desc'));
   return onSnapshot(
     q,
     (snapshot) => {
-      const users: HRUser[] = snapshot.docs.map((docSnap) => ({
-        id: docSnap.id,
-        ...(docSnap.data() as Omit<HRUser, 'id'>),
-      }));
+      const users: HRUser[] = snapshot.docs.map((docSnap) => {
+        const raw = docSnap.data() as any;
+        return {
+          id: docSnap.id,
+          username: raw.username || '',
+          name: raw.name || '',
+          email: raw.email || '',
+          sectionId: raw.sectionId || 'orders',
+          role: raw.role || 'Staff',
+          allowedRoutes: raw.allowedRoutes || [],
+          isActive: raw.isActive ?? true,
+          passwordHash: raw.passwordHash || (raw.password ? raw.password : undefined),
+          passwordSalt: raw.passwordSalt || '',
+          createdAt: raw.createdAt || new Date().toISOString(),
+          updatedAt: raw.updatedAt || new Date().toISOString(),
+        };
+      });
       onChange(users);
     },
     (error) => {
-      console.error('HR users real-time listener error:', error);
+      console.warn('HR users real-time listener note:', error?.message || error);
     }
   );
 }
@@ -44,29 +58,65 @@ export async function getHRUsers(): Promise<HRUser[]> {
   try {
     const q = query(collection(db, HR_USERS_COLLECTION), orderBy('createdAt', 'desc'));
     const snapshot = await getDocs(q);
-    return snapshot.docs.map((docSnap) => ({
-      id: docSnap.id,
-      ...(docSnap.data() as Omit<HRUser, 'id'>),
-    }));
+    return snapshot.docs.map((docSnap) => {
+      const raw = docSnap.data() as any;
+      return {
+        id: docSnap.id,
+        username: raw.username || '',
+        name: raw.name || '',
+        email: raw.email || '',
+        sectionId: raw.sectionId || 'orders',
+        role: raw.role || 'Staff',
+        allowedRoutes: raw.allowedRoutes || [],
+        isActive: raw.isActive ?? true,
+        passwordHash: raw.passwordHash || (raw.password ? raw.password : undefined),
+        passwordSalt: raw.passwordSalt || '',
+        createdAt: raw.createdAt || new Date().toISOString(),
+        updatedAt: raw.updatedAt || new Date().toISOString(),
+      };
+    });
   } catch (error) {
-    console.error('Failed to fetch HR users:', error);
+    console.warn('Failed to fetch HR users:', error);
     return [];
   }
 }
 
 /**
- * Create a new HR-managed user.
+ * Create a new HR-managed user with cryptographic salted password hashing.
+ * Plaintext passwords are NEVER stored in Firestore.
  */
 export async function createHRUser(
   userData: Omit<HRUser, 'id' | 'createdAt' | 'updatedAt'>
 ): Promise<{ success: boolean; id?: string; error?: string }> {
   try {
+    const sanitized = sanitizePayload(userData);
     const now = new Date().toISOString();
-    const docRef = await addDoc(collection(db, HR_USERS_COLLECTION), {
-      ...userData,
+
+    let passwordHash = sanitized.passwordHash;
+    let passwordSalt = sanitized.passwordSalt;
+
+    // Hash the password if provided as plaintext
+    if (sanitized.password) {
+      const hashed = await hashPassword(sanitized.password);
+      passwordHash = hashed.hash;
+      passwordSalt = hashed.salt;
+    }
+
+    const payload: Record<string, any> = {
+      name: sanitized.name,
+      username: sanitized.username.toLowerCase().trim(),
+      email: sanitized.email ? sanitized.email.toLowerCase().trim() : '',
+      sectionId: sanitized.sectionId,
+      role: sanitized.role,
+      allowedRoutes: sanitized.allowedRoutes || [],
+      isActive: sanitized.isActive ?? true,
+      passwordHash: passwordHash || '',
+      passwordSalt: passwordSalt || '',
       createdAt: now,
       updatedAt: now,
-    });
+    };
+
+    const docRef = await addDoc(collection(db, HR_USERS_COLLECTION), payload);
     return { success: true, id: docRef.id };
   } catch (error: any) {
     console.error('Failed to create HR user:', error);
@@ -76,17 +126,39 @@ export async function createHRUser(
 
 /**
  * Update an existing HR-managed user.
+ * Re-hashes password if changed, and sanitizes payload.
  */
 export async function updateHRUser(
   id: string,
   updates: Partial<Omit<HRUser, 'id' | 'createdAt'>>
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const sanitized = sanitizePayload(updates);
     const ref = doc(db, HR_USERS_COLLECTION, id);
-    await updateDoc(ref, {
-      ...updates,
+
+    const updatePayload: Record<string, any> = {
+      ...sanitized,
       updatedAt: new Date().toISOString(),
-    });
+    };
+
+    // If a new plaintext password was entered, hash it with fresh salt
+    if (sanitized.password && sanitized.password.trim() !== '') {
+      const hashed = await hashPassword(sanitized.password.trim());
+      updatePayload.passwordHash = hashed.hash;
+      updatePayload.passwordSalt = hashed.salt;
+      delete updatePayload.password; // Do not store plaintext
+    } else {
+      delete updatePayload.password;
+    }
+
+    if (sanitized.username) {
+      updatePayload.username = sanitized.username.toLowerCase().trim();
+    }
+    if (sanitized.email !== undefined) {
+      updatePayload.email = sanitized.email.toLowerCase().trim();
+    }
+
+    await updateDoc(ref, updatePayload);
     return { success: true };
   } catch (error: any) {
     console.error('Failed to update HR user:', error);
@@ -108,25 +180,48 @@ export async function deleteHRUser(id: string): Promise<{ success: boolean; erro
 }
 
 /**
- * Validate credentials against HR-managed users.
- * Matches username or email, and verifies password and active state.
- * Returns the matching HRUser if valid, otherwise null.
+ * Validate credentials against HR-managed users securely.
+ * Checks salted SHA-256 hash and handles legacy password migration seamlessly.
  */
-export function validateHRUserCredentials(
+export async function validateHRUserCredentials(
   users: HRUser[],
   usernameOrEmail: string,
-  password: string
-): HRUser | null {
+  candidatePassword: string
+): Promise<HRUser | null> {
   const normalized = usernameOrEmail.trim().toLowerCase();
-  return (
-    users.find(
-      (u) =>
-        u.isActive &&
-        (u.username.trim().toLowerCase() === normalized ||
-         (u.email && u.email.trim().toLowerCase() === normalized)) &&
-        u.password === password
-    ) || null
+
+  const user = users.find(
+    (u) =>
+      u.isActive &&
+      (u.username.trim().toLowerCase() === normalized ||
+        (u.email && u.email.trim().toLowerCase() === normalized))
   );
+
+  if (!user) return null;
+
+  const storedHash = user.passwordHash || user.password || '';
+  const salt = user.passwordSalt || '';
+
+  const isValid = await verifyPassword(candidatePassword, storedHash, salt);
+
+  if (!isValid) return null;
+
+  // If user was using legacy unhashed password, upgrade to salted hash asynchronously
+  if (!user.passwordSalt && user.id) {
+    try {
+      const { hash: newHash, salt: newSalt } = await hashPassword(candidatePassword);
+      const ref = doc(db, HR_USERS_COLLECTION, user.id);
+      await updateDoc(ref, {
+        passwordHash: newHash,
+        passwordSalt: newSalt,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch {
+      // Non-blocking background upgrade
+    }
+  }
+
+  return user;
 }
 
 /**

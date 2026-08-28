@@ -1,13 +1,15 @@
 import { NextRequest } from 'next/server';
 import { connectToDatabase } from '@/lib/mongoose';
 import { AppSettings } from '@/models/schemas';
+import { sanitizePayload } from '@/lib/security';
 
 // In-memory fallback if MongoDB is not connected
 const memorySettings: Record<string, any> = {};
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
-  const key = searchParams.get('key');
+  const rawKey = searchParams.get('key');
+  const key = rawKey ? sanitizePayload(rawKey) : null;
 
   try {
     const conn = await connectToDatabase();
@@ -52,7 +54,8 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    const rawBody = await request.json();
+    const body = sanitizePayload(rawBody);
     const { key, value } = body;
 
     if (!key) {

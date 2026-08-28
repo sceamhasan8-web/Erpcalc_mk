@@ -106,7 +106,9 @@ export default function OrderDetailPage() {
             genderCategory: 'mens' as const,
             quantity: String(order.quantity || 0),
             sizeBreakdown: order.sizeBreakdown || {},
-            requiredDepartments: order.requiredDepartments || departments,
+            requiredDepartments: (order.requiredDepartments && order.requiredDepartments.length > 0)
+              ? order.requiredDepartments
+              : departments,
           },
         ];
 
@@ -114,8 +116,25 @@ export default function OrderDetailPage() {
       const targetQty = Number(item.quantity) || 0;
       const itemFlows = orderFlows.filter((f) => !f.itemId || f.itemId === item.id);
 
-      // Section by section completed
-      const deptProgress = departments.map((dept) => {
+      // Determine applicable departments strictly for this item/order:
+      // 1. If this specific item has custom required departments configured:
+      const validItemDepts = (item.requiredDepartments || []).filter((d) =>
+        departments.length === 0 || departments.includes(d)
+      );
+
+      // 2. If no item-specific custom departments, use order's required departments:
+      const validOrderDepts = (order.requiredDepartments || []).filter((d) =>
+        departments.length === 0 || departments.includes(d)
+      );
+
+      const targetDepts = validItemDepts.length > 0
+        ? validItemDepts
+        : validOrderDepts.length > 0
+          ? validOrderDepts
+          : departments;
+
+      // Section by section completed (strictly for selected required departments)
+      const deptProgress = targetDepts.map((dept) => {
         const res = calculateMultiProcessProduction(itemFlows, dept, [], targetQty);
         const completed = res.totalCompleted;
         const due = Math.max(0, targetQty - completed);
@@ -129,11 +148,13 @@ export default function OrderDetailPage() {
         };
       });
 
-      // Overall completed (bottleneck or last stage e.g. Packing)
+      // Overall completed (bottleneck or last stage e.g. Packing or minimum across required depts)
       const packingProgress = deptProgress.find((d) => d.dept.toLowerCase() === 'packing');
       const finishedCompleted = packingProgress
         ? packingProgress.completed
-        : Math.min(...deptProgress.map((d) => d.completed));
+        : deptProgress.length > 0
+          ? Math.min(...deptProgress.map((d) => d.completed))
+          : 0;
       const finishedDue = Math.max(0, targetQty - finishedCompleted);
       const overallPercent = targetQty > 0 ? Math.min(100, Math.round((finishedCompleted / targetQty) * 100)) : 0;
 

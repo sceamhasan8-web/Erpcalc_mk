@@ -542,7 +542,7 @@ function UserFormModal({ mode, initial, onClose, onSave }: UserFormProps) {
   const [name, setName] = useState(initial?.name || '');
   const [username, setUsername] = useState(initial?.username || '');
   const [email, setEmail] = useState(initial?.email || '');
-  const [password, setPassword] = useState(initial?.password || '');
+  const [password, setPassword] = useState('');
   const [sectionId, setSectionId] = useState<SectionId>(initial?.sectionId || 'orders');
   const [role, setRole] = useState(initial?.role || '');
   const [isActive, setIsActive] = useState(initial?.isActive ?? true);
@@ -603,23 +603,32 @@ function UserFormModal({ mode, initial, onClose, onSave }: UserFormProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !username.trim() || !password.trim()) {
-      setError('Please fill in Name, Username, and Password.');
+    if (!name.trim() || !username.trim()) {
+      setError('Please fill in Name and Username.');
+      return;
+    }
+    if (mode === 'add' && !password.trim()) {
+      setError('Please set a secure password for the new user.');
       return;
     }
     setError('');
     setSaving(true);
     try {
-      await onSave({
+      const payload: any = {
         name: name.trim(),
         username: username.trim().toLowerCase(),
         email: email.trim().toLowerCase(),
-        password: password.trim(),
         sectionId,
         role: role.trim() || getSectionById(sectionId)?.defaultRole || 'Staff',
         isActive,
         allowedRoutes,
-      });
+      };
+
+      if (password.trim()) {
+        payload.password = password.trim();
+      }
+
+      await onSave(payload);
       onClose();
     } catch (err: any) {
       setError(err?.message || 'Failed to save user.');
@@ -704,15 +713,15 @@ function UserFormModal({ mode, initial, onClose, onSave }: UserFormProps) {
 
             <div>
               <label className="block font-bold text-[var(--ec-foreground)] mb-1">
-                Password *
+                {mode === 'add' ? 'Password *' : 'New Password (leave blank to keep current)'}
               </label>
               <div className="relative">
                 <input
                   type={showPass ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Password"
-                  required
+                  placeholder={mode === 'add' ? 'Create password' : 'Enter new password'}
+                  required={mode === 'add'}
                   className="w-full px-3.5 py-2.5 pr-9 rounded-xl border border-[var(--ec-border)] bg-[var(--ec-surface)] text-[var(--ec-foreground)] font-medium outline-none focus:border-blue-500 shadow-xs"
                 />
                 <button

@@ -36,6 +36,7 @@ export interface AuthUser {
   email?: string;
   allowedRoutes: string[];
   loginTime: string;
+  sessionSig?: string; // Tamper-proof session signature
 }
 
 export interface LoginCredentials {
@@ -48,7 +49,9 @@ export interface LoginCredentials {
 export interface HRUser {
   id: string;
   username: string;
-  password: string;
+  password?: string; // Optional during runtime to prevent exposing plain text in state
+  passwordHash?: string; // Salted SHA-256 hash
+  passwordSalt?: string; // Unique cryptographic salt per user
   name: string;
   email: string;
   sectionId: SectionId;

@@ -1111,7 +1111,10 @@ export function DashboardPage() {
                           </p>
 
                           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-                            {departmentNames.map((dept) => {
+                            {(item.order?.requiredDepartments && item.order.requiredDepartments.length > 0
+                              ? item.order.requiredDepartments.filter((d) => departmentNames.includes(d))
+                              : departmentNames
+                            ).map((dept) => {
                               const todayQty = item.sectionBreakdownToday[dept] || 0;
                               const monthQty = item.sectionBreakdownMonth[dept] || 0;
                               const totalQty = item.sectionBreakdownAllTime[dept] || 0;

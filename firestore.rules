@@ -3,38 +3,103 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Allow read/write access to all ERP collections for real-time synchronization
-    match /buyers/{document=**} {
-      allow read, write: if true;
-    }
-    match /orders/{document=**} {
-      allow read, write: if true;
-    }
-    match /productionFlows/{document=**} {
-      allow read, write: if true;
-    }
-    match /departments/{document=**} {
-      allow read, write: if true;
-    }
-    match /articles/{document=**} {
-      allow read, write: if true;
-    }
-    match /warehouseStocks/{document=**} {
-      allow read, write: if true;
-    }
-    match /finishedGoods/{document=**} {
-      allow read, write: if true;
-    }
-    match /materialReceivals/{document=**} {
-      allow read, write: if true;
-    }
-    match /users/{document=**} {
-      allow read, write: if true;
+    // Helper functions for security validation
+    function isValidString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
     }
 
-    // Default fallback rule for any other collection
+    function isNonEmpty(val) {
+      return val != null;
+    }
+
+    // HR Users collection - credentials and role access
+    match /hr_users/{userId} {
+      allow read: if true;
+      allow create: if request.resource.data.username is string
+                    && request.resource.data.username.size() >= 2
+                    && request.resource.data.username.size() <= 80
+                    && request.resource.data.sectionId is string;
+      allow update: if request.resource.data.username is string
+                    && request.resource.data.sectionId is string;
+      allow delete: if true;
+    }
+
+    // ERP Core Module Collections
+    match /buyers/{buyerId} {
+      allow read: if true;
+      allow create, update: if isValidString(buyerId, 1, 128);
+      allow delete: if true;
+    }
+
+    match /orders/{orderId} {
+      allow read: if true;
+      allow create, update: if isValidString(orderId, 1, 128);
+      allow delete: if true;
+    }
+
+    match /productionFlows/{flowId} {
+      allow read: if true;
+      allow create, update: if isValidString(flowId, 1, 128);
+      allow delete: if true;
+    }
+
+    match /departments/{deptId} {
+      allow read: if true;
+      allow create, update: if isValidString(deptId, 1, 128);
+      allow delete: if true;
+    }
+
+    match /articles/{artId} {
+      allow read: if true;
+      allow create, update: if isValidString(artId, 1, 128);
+      allow delete: if true;
+    }
+
+    match /warehouseStocks/{stockId} {
+      allow read: if true;
+      allow create, update: if isValidString(stockId, 1, 128);
+      allow delete: if true;
+    }
+
+    match /finishedGoods/{fgId} {
+      allow read: if true;
+      allow create, update: if isValidString(fgId, 1, 128);
+      allow delete: if true;
+    }
+
+    match /materialReceivals/{mrId} {
+      allow read: if true;
+      allow create, update: if isValidString(mrId, 1, 128);
+      allow delete: if true;
+    }
+
+    match /productionPlans/{planId} {
+      allow read: if true;
+      allow create, update: if isValidString(planId, 1, 128);
+      allow delete: if true;
+    }
+
+    match /hr_employees/{empId} {
+      allow read: if true;
+      allow create, update: if isValidString(empId, 1, 128);
+      allow delete: if true;
+    }
+
+    match /hr_daily_manpower/{recordId} {
+      allow read: if true;
+      allow create, update: if isValidString(recordId, 1, 128);
+      allow delete: if true;
+    }
+
+    match /settings/{settingKey} {
+      allow read: if true;
+      allow create, update: if isValidString(settingKey, 1, 128);
+      allow delete: if true;
+    }
+
+    // Explicitly deny everything else
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
   }
 }

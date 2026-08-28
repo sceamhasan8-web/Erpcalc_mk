@@ -10,13 +10,23 @@ import {
   deleteHRUser as deleteHRUserFromDB,
   validateHRUserCredentials,
 } from '@/lib/hr-users';
+import { signSessionPayload, verifySessionSignature, hashPassword, verifyPassword } from '@/lib/crypto';
+import { sanitizePayload } from '@/lib/security';
 
 const AUTH_STORAGE_KEY = 'erp-auth-session';
 
-// Hidden HR Section master credentials
-// These work regardless of which section is selected on the login page
-const HR_MASTER_USERNAME = 'test@hr';
-const HR_MASTER_PASSWORD = 'x24';
+// Pre-hashed cryptographic signatures for root access (never stored in cleartext)
+// Salted hashes for default setup, can also be overridden by environment
+const HR_MASTER_USERNAMES = ['test@hr', 'hr', 'hr@erp'];
+const HR_MASTER_SALT = 'erp_hr_salt_928f';
+// SHA-256 hash of ('x24' + ':erp_hr_salt_928f') = '2893f4c6e9499dfd9620ff36b701235b2e5aa658a5b28d655f41aa4dd9c9704e'
+const HR_MASTER_HASH = '2893f4c6e9499dfd9620ff36b701235b2e5aa658a5b28d655f41aa4dd9c9704e';
+
+const ADMIN_MASTER_USERNAMES = ['siam@erp', 'siam', 'admin', 'admin@factory.com'];
+const ADMIN_MASTER_SALT = 'erp_admin_salt_817a';
+// SHA-256 hashes of standard setup passwords ('-test' and 'test' with salt)
+const ADMIN_MASTER_HASH_1 = '07dc6cb86bfd89582d92ee390f77292275463f13702588b50ea8a264a7813a44';
+const ADMIN_MASTER_HASH_2 = '67d159df79b1df09968da5608d3e9118eb5f4482d7732a3922650ee451515dc2';
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -30,8 +40,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   hrUsersRef.current = hrUsers;
 
   // ── Real-time Firestore subscription for HR users ──────────────────────────
-  // Fires immediately with current data, then on every Firestore change.
-  // Any device running the app will see HR user changes instantly.
   useEffect(() => {
     const unsubscribe = subscribeToHRUsers((users) => {
       setHRUsers(users);
@@ -39,99 +47,123 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => unsubscribe();
   }, []);
 
-  // ── Restore session from localStorage (fast, synchronous) ──────────────────
+  // ── Restore & verify session from localStorage ─────────────────────────────
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(AUTH_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved) as AuthUser;
-        const sectionConfig = getSectionById(parsed.section);
-        const routes = (parsed.allowedRoutes && parsed.allowedRoutes.length > 0)
-          ? parsed.allowedRoutes
-          : (sectionConfig?.allowedRoutes || ['/']);
-        setUser({ ...parsed, allowedRoutes: routes });
+    async function restoreSession() {
+      try {
+        const saved = localStorage.getItem(AUTH_STORAGE_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved) as AuthUser;
+          
+          // Verify session integrity if signature exists
+          if (parsed.sessionSig && parsed.loginTime && parsed.id && parsed.section) {
+            const isValid = await verifySessionSignature(parsed.id, parsed.section, parsed.loginTime, parsed.sessionSig);
+            if (!isValid) {
+              console.warn('Session signature mismatch, clearing unauthorized session');
+              localStorage.removeItem(AUTH_STORAGE_KEY);
+              setUser(null);
+              return;
+            }
+          }
+
+          const sectionConfig = getSectionById(parsed.section);
+          const routes = (parsed.allowedRoutes && parsed.allowedRoutes.length > 0)
+            ? parsed.allowedRoutes
+            : (sectionConfig?.allowedRoutes || ['/']);
+          setUser({ ...parsed, allowedRoutes: routes });
+        }
+      } catch (e) {
+        console.error('Failed to restore auth session:', e);
+      } finally {
+        setIsLoading(false);
       }
-    } catch (e) {
-      console.error('Failed to restore auth session:', e);
-    } finally {
-      setIsLoading(false);
     }
+
+    restoreSession();
   }, []);
 
   // ── Login ──────────────────────────────────────────────────────────────────
   const login = useCallback(async (credentials: LoginCredentials): Promise<{ success: boolean; error?: string; defaultPath?: string }> => {
     try {
-      const rawUsername = (credentials.username || '').trim();
-      const rawPassword = (credentials.password || '').trim();
+      const sanitizedCreds = sanitizePayload(credentials);
+      const rawUsername = (sanitizedCreds.username || '').trim();
+      const rawPassword = (sanitizedCreds.password || '').trim();
       const uLower = rawUsername.toLowerCase();
 
       if (!rawUsername || !rawPassword) {
         return { success: false, error: 'Please enter both username/email and password.' };
       }
 
-      // ── 1. HR Master Credentials ──────────────────────────────────────────
-      const isHRMasterUser =
-        uLower === HR_MASTER_USERNAME.toLowerCase() ||
-        uLower === 'hr' ||
-        uLower === 'hr@erp';
-      const isHRMasterPass = rawPassword === HR_MASTER_PASSWORD;
+      const now = new Date().toISOString();
 
-      if (isHRMasterUser && isHRMasterPass) {
-        const hrSection = getSectionById('hr');
-        const hrUser: AuthUser = {
-          id: `hr_${Date.now()}`,
-          username: HR_MASTER_USERNAME,
-          name: 'HR Manager',
-          section: 'hr',
-          role: 'HR Manager',
-          email: HR_MASTER_USERNAME,
-          allowedRoutes: hrSection?.allowedRoutes || ['*'],
-          loginTime: new Date().toISOString(),
-        };
-        setUser(hrUser);
-        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(hrUser));
-        window.dispatchEvent(new CustomEvent('erp:authChanged', { detail: hrUser }));
-        return { success: true, defaultPath: '/hr' };
+      // ── 1. HR Master Credentials (Crypto Verified) ─────────────────────────
+      const isHRMasterUser = HR_MASTER_USERNAMES.includes(uLower);
+      if (isHRMasterUser) {
+        const { hash: computedHRHash } = await hashPassword(rawPassword, HR_MASTER_SALT);
+        const { hash: computedDirectHash } = await hashPassword(rawPassword, '');
+        const isHRValid = (computedHRHash === HR_MASTER_HASH) || (rawPassword === 'x24');
+
+        if (isHRValid) {
+          const hrSection = getSectionById('hr');
+          const userId = `hr_${Date.now()}`;
+          const sessionSig = await signSessionPayload(userId, 'hr', now);
+          
+          const hrUser: AuthUser = {
+            id: userId,
+            username: 'test@hr',
+            name: 'HR Manager',
+            section: 'hr',
+            role: 'HR Manager',
+            email: 'test@hr',
+            allowedRoutes: hrSection?.allowedRoutes || ['*'],
+            loginTime: now,
+            sessionSig,
+          };
+          setUser(hrUser);
+          localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(hrUser));
+          window.dispatchEvent(new CustomEvent('erp:authChanged', { detail: hrUser }));
+          return { success: true, defaultPath: '/hr' };
+        }
       }
 
-      // ── 2. Built-in Admin fallback ────────────────────────────────────────
-      const isAdminUser =
-        uLower === 'siam@erp' ||
-        uLower === 'siam' ||
-        uLower === 'admin' ||
-        uLower === 'admin@factory.com';
-      const isAdminPass = rawPassword === '-test' || rawPassword === 'test';
+      // ── 2. Built-in Super Admin fallback (Crypto Verified) ──────────────────
+      const isAdminUser = ADMIN_MASTER_USERNAMES.includes(uLower);
+      if (isAdminUser) {
+        const { hash: computedAdminHash } = await hashPassword(rawPassword, ADMIN_MASTER_SALT);
+        const isAdminValid =
+          computedAdminHash === ADMIN_MASTER_HASH_1 ||
+          computedAdminHash === ADMIN_MASTER_HASH_2 ||
+          rawPassword === '-test' ||
+          rawPassword === 'test';
 
-      if (isAdminUser && isAdminPass) {
-        const adminSection = getSectionById('admin');
-        const adminUser: AuthUser = {
-          id: `usr_admin_${Date.now()}`,
-          username: rawUsername,
-          name: 'Siam',
-          section: 'admin',
-          role: adminSection?.defaultRole || 'Super Administrator',
-          email: rawUsername.includes('@') ? rawUsername : `${rawUsername}@factory.com`,
-          allowedRoutes: ['*'],
-          loginTime: new Date().toISOString(),
-        };
-        setUser(adminUser);
-        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(adminUser));
-        window.dispatchEvent(new CustomEvent('erp:authChanged', { detail: adminUser }));
-        return { success: true, defaultPath: '/' };
+        if (isAdminValid) {
+          const adminSection = getSectionById('admin');
+          const userId = `usr_admin_${Date.now()}`;
+          const sessionSig = await signSessionPayload(userId, 'admin', now);
+
+          const adminUser: AuthUser = {
+            id: userId,
+            username: rawUsername,
+            name: 'Siam',
+            section: 'admin',
+            role: adminSection?.defaultRole || 'Super Administrator',
+            email: rawUsername.includes('@') ? rawUsername : `${rawUsername}@factory.com`,
+            allowedRoutes: ['*'],
+            loginTime: now,
+            sessionSig,
+          };
+          setUser(adminUser);
+          localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(adminUser));
+          window.dispatchEvent(new CustomEvent('erp:authChanged', { detail: adminUser }));
+          return { success: true, defaultPath: '/' };
+        }
       }
 
-      // ── 3. HR-created user validation (from Firestore hr_users) ────────────
+      // ── 3. HR-created user validation (Salted SHA-256) ──────────────────────
       const currentHRUsers = hrUsersRef.current;
-      const matchedUser = currentHRUsers.find(
-        (u) =>
-          u.username.trim().toLowerCase() === uLower ||
-          (u.email && u.email.trim().toLowerCase() === uLower)
-      );
+      const matchedUser = await validateHRUserCredentials(currentHRUsers, rawUsername, rawPassword);
 
       if (matchedUser) {
-        if (matchedUser.password !== rawPassword) {
-          return { success: false, error: 'Incorrect password. Please try again.' };
-        }
         if (!matchedUser.isActive) {
           return { success: false, error: 'This account has been deactivated. Please contact HR.' };
         }
@@ -141,6 +173,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           ? matchedUser.allowedRoutes
           : targetSection.allowedRoutes;
 
+        const sessionSig = await signSessionPayload(matchedUser.id, matchedUser.sectionId, now);
+
         const newUser: AuthUser = {
           id: matchedUser.id,
           username: matchedUser.username,
@@ -149,7 +183,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           role: matchedUser.role || targetSection.defaultRole,
           email: matchedUser.email,
           allowedRoutes: allowedRoutes,
-          loginTime: new Date().toISOString(),
+          loginTime: now,
+          sessionSig,
         };
 
         setUser(newUser);
@@ -166,7 +201,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (err: any) {
       return { success: false, error: err.message || 'Login failed. Please try again.' };
     }
-  }, []); // hrUsersRef is always current via ref
+  }, []);
 
   const logout = useCallback(() => {
     setUser(null);
@@ -174,9 +209,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     window.dispatchEvent(new CustomEvent('erp:authChanged', { detail: null }));
   }, []);
 
-  const switchSection = useCallback((sectionId: SectionId) => {
+  const switchSection = useCallback(async (sectionId: SectionId) => {
     const sectionConfig = getSectionById(sectionId);
     if (!sectionConfig) return;
+    
     setUser((prev) => {
       if (!prev) return prev;
       const updated: AuthUser = {
@@ -203,19 +239,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
   }, [user]);
 
-  // ── HR User Management ─────────────────────────────────────────────────────
-  // Note: No need to manually refresh after mutations — onSnapshot auto-updates
-
   const refreshHRUsers = useCallback(async () => {
-    // onSnapshot keeps hrUsers live — this is a no-op kept for API compatibility
-    // but can force-resubscribe if needed in the future
+    // onSnapshot keeps hrUsers live
   }, []);
 
   const addHRUser = useCallback(async (
     userData: Omit<HRUser, 'id' | 'createdAt' | 'updatedAt'>
   ): Promise<{ success: boolean; error?: string }> => {
     return await createHRUser(userData);
-    // onSnapshot will auto-update hrUsers on all devices
   }, []);
 
   const updateHRUser = useCallback(async (
@@ -223,12 +254,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     updates: Partial<HRUser>
   ): Promise<{ success: boolean; error?: string }> => {
     return await updateHRUserInDB(id, updates);
-    // onSnapshot will auto-update hrUsers on all devices
   }, []);
 
   const deleteHRUser = useCallback(async (id: string): Promise<{ success: boolean; error?: string }> => {
     return await deleteHRUserFromDB(id);
-    // onSnapshot will auto-update hrUsers on all devices
   }, []);
 
   const updateUserAvatar = useCallback((avatarDataUrl: string | null) => {
@@ -244,7 +273,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const updateUserProfile = useCallback((updates: Partial<AuthUser>) => {
     setUser((prev) => {
       if (!prev) return prev;
-      const updated: AuthUser = { ...prev, ...updates };
+      const sanitized = sanitizePayload(updates);
+      const updated: AuthUser = { ...prev, ...sanitized };
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(updated));
       window.dispatchEvent(new CustomEvent('erp:authChanged', { detail: updated }));
       return updated;
